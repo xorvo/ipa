@@ -314,6 +314,128 @@ Forces a reload of state from Event Store. Used for error recovery.
 
 **Use Case**: Recovery from corrupted in-memory state or after manual event manipulation.
 
+#### `get_workstream/2`
+```elixir
+@spec get_workstream(task_id :: String.t(), workstream_id :: String.t()) ::
+  {:ok, workstream :: map()} | {:error, :not_found}
+```
+Returns a single workstream by ID.
+
+**Parameters**:
+- `task_id` - Task UUID
+- `workstream_id` - Workstream UUID
+
+**Returns**: Workstream map (see State Schema section)
+
+**Example**:
+```elixir
+{:ok, workstream} = Ipa.Pod.State.get_workstream(task_id, "ws-1")
+# => %{
+#   workstream_id: "ws-1",
+#   spec: "Implement authentication",
+#   status: :in_progress,
+#   agent_id: "agent-123",
+#   dependencies: [],
+#   blocking_on: [],
+#   ...
+# }
+```
+
+#### `list_workstreams/1`
+```elixir
+@spec list_workstreams(task_id :: String.t()) ::
+  {:ok, workstreams :: map()}
+```
+Returns all workstreams for a task as a map.
+
+**Returns**: Map of workstream_id => workstream
+
+**Example**:
+```elixir
+{:ok, workstreams} = Ipa.Pod.State.list_workstreams(task_id)
+# => %{
+#   "ws-1" => %{workstream_id: "ws-1", status: :completed, ...},
+#   "ws-2" => %{workstream_id: "ws-2", status: :in_progress, ...}
+# }
+```
+
+#### `get_active_workstreams/1`
+```elixir
+@spec get_active_workstreams(task_id :: String.t()) ::
+  {:ok, active_workstreams :: [map()]}
+```
+Returns only workstreams with status `:in_progress`.
+
+**Returns**: List of workstream maps
+
+**Example**:
+```elixir
+{:ok, active} = Ipa.Pod.State.get_active_workstreams(task_id)
+# => [
+#   %{workstream_id: "ws-2", status: :in_progress, ...},
+#   %{workstream_id: "ws-3", status: :in_progress, ...}
+# ]
+```
+
+#### `get_messages/2`
+```elixir
+@spec get_messages(task_id :: String.t(), opts :: keyword()) ::
+  {:ok, messages :: [map()]}
+```
+Returns messages with optional filtering.
+
+**Parameters**:
+- `task_id` - Task UUID
+- `opts` - Optional filters:
+  - `:thread_id` - Return only messages in this thread (includes root + replies)
+  - `:workstream_id` - Return only messages for this workstream
+  - `:type` - Return only messages of this type (`:question`, `:approval`, `:update`, `:blocker`)
+  - `:limit` - Maximum number of messages to return
+
+**Returns**: List of message maps sorted by `posted_at` (descending)
+
+**Example**:
+```elixir
+# Get all messages
+{:ok, messages} = Ipa.Pod.State.get_messages(task_id)
+
+# Get messages in a thread
+{:ok, thread} = Ipa.Pod.State.get_messages(task_id, thread_id: "msg-123")
+
+# Get approval messages for a workstream
+{:ok, approvals} = Ipa.Pod.State.get_messages(task_id,
+  workstream_id: "ws-1",
+  type: :approval
+)
+```
+
+#### `get_inbox/2`
+```elixir
+@spec get_inbox(task_id :: String.t(), opts :: keyword()) ::
+  {:ok, inbox :: [map()]}
+```
+Returns inbox notifications with optional filtering.
+
+**Parameters**:
+- `task_id` - Task UUID
+- `opts` - Optional filters:
+  - `:unread_only?` - If `true`, return only unread notifications
+  - `:recipient` - Filter by recipient (user_id or agent_id)
+
+**Returns**: List of notification maps sorted by `created_at` (descending)
+
+**Example**:
+```elixir
+# Get all notifications
+{:ok, inbox} = Ipa.Pod.State.get_inbox(task_id)
+
+# Get unread notifications for a user
+{:ok, unread} = Ipa.Pod.State.get_inbox(task_id,
+  unread_only?: true,
+  recipient: "user-456"
+)
+```
+
 ## State Schema
 
 The in-memory state maintained by Pod State Manager:
@@ -393,6 +515,61 @@ The in-memory state maintained by Pod State Manager:
       requested_at: integer(),
       reason: String.t()
     }
+  ],
+
+  # NEW: Workstreams (parallel work execution)
+  workstreams: %{
+    "ws-1" => %{
+      workstream_id: String.t(),          # Workstream UUID
+      spec: String.t(),                   # Workstream specification
+      status: atom(),                     # :pending | :in_progress | :blocked | :completed | :failed
+      agent_id: String.t() | nil,         # Assigned agent UUID
+      dependencies: [String.t()],         # List of workstream IDs that must complete first
+      blocking_on: [String.t()],          # Subset of dependencies not yet complete
+      workspace: String.t() | nil,        # Workspace path
+      started_at: integer() | nil,
+      completed_at: integer() | nil,
+      result: map() | nil,
+      error: String.t() | nil
+    }
+  },
+
+  # NEW: Concurrency control
+  max_workstream_concurrency: integer(),  # Default: 3
+  active_workstream_count: integer(),     # Number of workstreams currently in_progress
+
+  # NEW: Communications (human-agent and agent-agent coordination)
+  messages: [
+    %{
+      message_id: String.t(),             # Message UUID
+      type: atom(),                       # :question | :approval | :update | :blocker
+      content: String.t(),
+      author: String.t(),                 # "agent-123" or "user-456"
+      thread_id: String.t() | nil,        # Parent message ID for threading
+      workstream_id: String.t() | nil,    # Associated workstream
+      posted_at: integer(),
+      read_by: [String.t()],              # List of user IDs who have read this message
+
+      # Approval-specific fields (nil for non-approval messages)
+      approval_options: [String.t()] | nil,      # Choices for approval
+      approval_choice: String.t() | nil,         # Selected choice
+      approval_given_by: String.t() | nil,       # Who approved
+      approval_given_at: integer() | nil,        # When approved
+      blocking?: boolean() | nil                 # Whether agent is blocked waiting
+    }
+  ],
+
+  # NEW: Inbox/Notifications
+  inbox: [
+    %{
+      notification_id: String.t(),        # Notification UUID
+      recipient: String.t(),              # "agent-123" or "user-456"
+      message_id: String.t(),             # Reference to message
+      type: atom(),                       # :needs_approval | :question_asked | :workstream_completed
+      message_preview: String.t(),        # First 100 chars of message content (for UI)
+      read?: boolean(),
+      created_at: integer()
+    }
   ]
 }
 ```
@@ -421,7 +598,12 @@ The in-memory state maintained by Pod State Manager:
     github: %{pr_number: nil, pr_url: nil, pr_merged?: false, synced_at: nil},
     jira: %{ticket_id: nil, status: nil, synced_at: nil}
   },
-  pending_transitions: []
+  pending_transitions: [],
+  workstreams: %{},
+  max_workstream_concurrency: 3,
+  active_workstream_count: 0,
+  messages: [],
+  inbox: []
 }
 ```
 
@@ -641,6 +823,359 @@ defp apply_event(%{
   }
   new_external_sync = %{state.external_sync | github: new_github}
   %{state | external_sync: new_external_sync, version: version, updated_at: timestamp}
+end
+```
+
+### Workstream Events
+
+#### `workstream_created`
+```elixir
+defp apply_event(%{
+  event_type: "workstream_created",
+  data: %{workstream_id: ws_id, spec: spec, dependencies: deps},
+  version: version,
+  inserted_at: timestamp
+}, state) do
+  new_workstream = %{
+    workstream_id: ws_id,
+    spec: spec,
+    status: :pending,
+    agent_id: nil,
+    dependencies: deps,
+    # Defensive nil-checking to prevent crashes
+    blocking_on: Enum.filter(deps, fn dep_id ->
+      case Map.get(state.workstreams, dep_id) do
+        nil -> true  # Dependency not created yet, treat as blocking
+        dep -> dep.status != :completed
+      end
+    end),
+    workspace: nil,
+    started_at: nil,
+    completed_at: nil,
+    result: nil,
+    error: nil
+  }
+
+  %{state |
+    workstreams: Map.put(state.workstreams, ws_id, new_workstream),
+    version: version,
+    updated_at: timestamp
+  }
+end
+```
+
+#### `workstream_spec_generated`
+```elixir
+defp apply_event(%{
+  event_type: "workstream_spec_generated",
+  data: %{workstream_id: ws_id, spec: spec},
+  version: version,
+  inserted_at: timestamp
+}, state) do
+  updated_workstreams = Map.update!(state.workstreams, ws_id, fn ws ->
+    %{ws | spec: spec}
+  end)
+
+  %{state |
+    workstreams: updated_workstreams,
+    version: version,
+    updated_at: timestamp
+  }
+end
+```
+
+#### `workstream_agent_started`
+```elixir
+defp apply_event(%{
+  event_type: "workstream_agent_started",
+  data: %{workstream_id: ws_id, agent_id: agent_id, workspace: workspace},
+  version: version,
+  inserted_at: timestamp
+}, state) do
+  # Update workstream status
+  updated_workstream = state.workstreams[ws_id]
+    |> Map.put(:status, :in_progress)
+    |> Map.put(:agent_id, agent_id)
+    |> Map.put(:workspace, workspace)
+    |> Map.put(:started_at, timestamp)
+
+  # Also add agent to agents list with workstream_id
+  new_agent = %{
+    agent_id: agent_id,
+    agent_type: "workstream_executor",
+    workstream_id: ws_id,           # Track workstream for UI grouping
+    status: :running,
+    workspace: workspace,
+    started_at: timestamp,
+    completed_at: nil,
+    duration_ms: nil,
+    result: nil,
+    error: nil
+  }
+
+  %{state |
+    workstreams: Map.put(state.workstreams, ws_id, updated_workstream),
+    agents: [new_agent | state.agents],
+    active_workstream_count: state.active_workstream_count + 1,
+    version: version,
+    updated_at: timestamp
+  }
+end
+```
+
+#### `workstream_completed`
+```elixir
+defp apply_event(%{
+  event_type: "workstream_completed",
+  data: %{workstream_id: ws_id, result: result},
+  version: version,
+  inserted_at: timestamp
+}, state) do
+  # Update completed workstream
+  updated_workstream = state.workstreams[ws_id]
+    |> Map.put(:status, :completed)
+    |> Map.put(:completed_at, timestamp)
+    |> Map.put(:result, result)
+
+  # Update blocking_on for dependent workstreams
+  updated_workstreams =
+    state.workstreams
+    |> Map.put(ws_id, updated_workstream)
+    |> Enum.map(fn {id, ws} ->
+      # Check if ws_id is in blocking_on, not dependencies
+      if ws_id in ws.blocking_on do
+        {id, %{ws | blocking_on: List.delete(ws.blocking_on, ws_id)}}
+      else
+        {id, ws}
+      end
+    end)
+    |> Map.new()
+
+  %{state |
+    workstreams: updated_workstreams,
+    active_workstream_count: max(0, state.active_workstream_count - 1),
+    version: version,
+    updated_at: timestamp
+  }
+end
+```
+
+#### `workstream_failed`
+```elixir
+defp apply_event(%{
+  event_type: "workstream_failed",
+  data: %{workstream_id: ws_id, agent_id: _agent_id, error: error},
+  version: version,
+  inserted_at: timestamp
+}, state) do
+  updated_workstream = state.workstreams[ws_id]
+    |> Map.put(:status, :failed)
+    |> Map.put(:completed_at, timestamp)
+    |> Map.put(:error, error)
+
+  %{state |
+    workstreams: Map.put(state.workstreams, ws_id, updated_workstream),
+    active_workstream_count: max(0, state.active_workstream_count - 1),
+    version: version,
+    updated_at: timestamp
+  }
+end
+```
+
+#### `workstream_blocked`
+```elixir
+defp apply_event(%{
+  event_type: "workstream_blocked",
+  data: %{workstream_id: ws_id, blocked_by: dep_ids},
+  version: version,
+  inserted_at: timestamp
+}, state) do
+  updated_workstreams = Map.update!(state.workstreams, ws_id, fn ws ->
+    %{ws |
+      status: :blocked,
+      blocking_on: dep_ids
+    }
+  end)
+
+  %{state |
+    workstreams: updated_workstreams,
+    version: version,
+    updated_at: timestamp
+  }
+end
+```
+
+### Communication Events
+
+#### `message_posted`
+```elixir
+defp apply_event(%{
+  event_type: "message_posted",
+  data: %{message_id: msg_id, type: type, content: content, author: author, thread_id: thread_id, workstream_id: ws_id},
+  version: version,
+  inserted_at: timestamp
+}, state) do
+  new_message = %{
+    message_id: msg_id,
+    type: type,
+    content: content,
+    author: author,
+    thread_id: thread_id,
+    workstream_id: ws_id,
+    posted_at: timestamp,
+    read_by: [],
+    # Approval-specific fields (nil for non-approval messages)
+    approval_options: nil,
+    approval_choice: nil,
+    approval_given_by: nil,
+    approval_given_at: nil,
+    blocking?: nil
+  }
+
+  %{state |
+    messages: [new_message | state.messages],
+    version: version,
+    updated_at: timestamp
+  }
+end
+```
+
+#### `approval_requested`
+```elixir
+defp apply_event(%{
+  event_type: "approval_requested",
+  data: %{message_id: msg_id, question: question, options: options, author: author, workstream_id: ws_id, blocking?: blocking},
+  version: version,
+  inserted_at: timestamp
+}, state) do
+  # Create approval message
+  new_message = %{
+    message_id: msg_id,
+    type: :approval,
+    content: question,
+    author: author,
+    thread_id: nil,
+    workstream_id: ws_id,
+    posted_at: timestamp,
+    read_by: [],
+    # Approval-specific fields
+    approval_options: options,
+    approval_choice: nil,
+    approval_given_by: nil,
+    approval_given_at: nil,
+    blocking?: blocking
+  }
+
+  %{state |
+    messages: [new_message | state.messages],
+    version: version,
+    updated_at: timestamp
+  }
+end
+```
+
+#### `approval_given`
+```elixir
+defp apply_event(%{
+  event_type: "approval_given",
+  data: %{message_id: msg_id, approved_by: user_id, choice: choice, comment: _comment},
+  version: version,
+  inserted_at: timestamp
+}, state) do
+  # Update approval message
+  updated_messages = Enum.map(state.messages, fn msg ->
+    if msg.message_id == msg_id do
+      %{msg |
+        approval_choice: choice,
+        approval_given_by: user_id,
+        approval_given_at: timestamp
+      }
+    else
+      msg
+    end
+  end)
+
+  # Remove notification from inbox
+  updated_inbox = Enum.reject(state.inbox, fn notif ->
+    notif.message_id == msg_id && notif.type == :needs_approval
+  end)
+
+  %{state |
+    messages: updated_messages,
+    inbox: updated_inbox,
+    version: version,
+    updated_at: timestamp
+  }
+end
+```
+
+#### `notification_created`
+```elixir
+defp apply_event(%{
+  event_type: "notification_created",
+  data: %{notification_id: notif_id, recipient: recipient, message_id: msg_id, type: type, message_preview: preview},
+  version: version,
+  inserted_at: timestamp
+}, state) do
+  new_notification = %{
+    notification_id: notif_id,
+    recipient: recipient,
+    message_id: msg_id,
+    type: type,
+    message_preview: preview,
+    read?: false,
+    created_at: timestamp
+  }
+
+  %{state |
+    inbox: [new_notification | state.inbox],
+    version: version,
+    updated_at: timestamp
+  }
+end
+```
+
+#### `notification_read`
+```elixir
+defp apply_event(%{
+  event_type: "notification_read",
+  data: %{notification_id: notif_id, read_by: _user_id},
+  version: version,
+  inserted_at: timestamp
+}, state) do
+  updated_inbox = Enum.map(state.inbox, fn notif ->
+    if notif.notification_id == notif_id do
+      %{notif | read?: true}
+    else
+      notif
+    end
+  end)
+
+  %{state |
+    inbox: updated_inbox,
+    version: version,
+    updated_at: timestamp
+  }
+end
+```
+
+#### `notification_cleared`
+```elixir
+defp apply_event(%{
+  event_type: "notification_cleared",
+  data: %{notification_id: notif_id},
+  version: version,
+  inserted_at: timestamp
+}, state) do
+  updated_inbox = Enum.reject(state.inbox, fn notif ->
+    notif.notification_id == notif_id
+  end)
+
+  %{state |
+    inbox: updated_inbox,
+    version: version,
+    updated_at: timestamp
+  }
 end
 ```
 
@@ -882,6 +1417,140 @@ defp valid_transition?(_from, :cancelled), do: true  # Can cancel from any phase
 defp valid_transition?(_from, _to), do: false
 
 # Default: no validation required (for custom/future event types)
+# Workstream Events
+defp validate_event("workstream_created", %{workstream_id: ws_id, spec: spec, dependencies: deps}, state) do
+  cond do
+    Map.has_key?(state.workstreams, ws_id) ->
+      {:error, {:validation_failed, "Workstream #{ws_id} already exists"}}
+
+    not is_binary(ws_id) or ws_id == "" ->
+      {:error, {:validation_failed, "Workstream ID must be a non-empty string"}}
+
+    not is_binary(spec) or spec == "" ->
+      {:error, {:validation_failed, "Workstream spec must be a non-empty string"}}
+
+    not is_list(deps) ->
+      {:error, {:validation_failed, "Dependencies must be a list"}}
+
+    state.active_workstream_count >= state.max_workstream_concurrency ->
+      {:error, {:validation_failed, "Max workstream concurrency reached (#{state.max_workstream_concurrency})"}}
+
+    true ->
+      :ok
+  end
+end
+
+defp validate_event("workstream_agent_started", %{workstream_id: ws_id, agent_id: agent_id}, state) do
+  workstream = Map.get(state.workstreams, ws_id)
+
+  cond do
+    workstream == nil ->
+      {:error, {:validation_failed, "Workstream #{ws_id} not found"}}
+
+    workstream.status not in [:pending, :blocked] ->
+      {:error, {:validation_failed, "Workstream #{ws_id} is not pending or blocked (status: #{workstream.status})"}}
+
+    not Enum.empty?(workstream.blocking_on) ->
+      {:error, {:validation_failed, "Workstream #{ws_id} has unresolved dependencies: #{inspect(workstream.blocking_on)}"}}
+
+    Enum.any?(state.agents, &(&1.agent_id == agent_id)) ->
+      {:error, {:validation_failed, "Agent #{agent_id} already exists"}}
+
+    true ->
+      :ok
+  end
+end
+
+defp validate_event("workstream_completed", %{workstream_id: ws_id}, state) do
+  workstream = Map.get(state.workstreams, ws_id)
+
+  cond do
+    workstream == nil ->
+      {:error, {:validation_failed, "Workstream #{ws_id} not found"}}
+
+    workstream.status != :in_progress ->
+      {:error, {:validation_failed, "Workstream #{ws_id} is not in progress (status: #{workstream.status})"}}
+
+    true ->
+      :ok
+  end
+end
+
+defp validate_event("workstream_failed", %{workstream_id: ws_id, error: error}, state) do
+  workstream = Map.get(state.workstreams, ws_id)
+
+  cond do
+    workstream == nil ->
+      {:error, {:validation_failed, "Workstream #{ws_id} not found"}}
+
+    workstream.status != :in_progress ->
+      {:error, {:validation_failed, "Workstream #{ws_id} is not in progress (status: #{workstream.status})"}}
+
+    not is_binary(error) or error == "" ->
+      {:error, {:validation_failed, "Error message must be a non-empty string"}}
+
+    true ->
+      :ok
+  end
+end
+
+# Communication Events
+defp validate_event("message_posted", %{message_id: msg_id, type: type, content: content, author: author}, state) do
+  cond do
+    Enum.any?(state.messages, &(&1.message_id == msg_id)) ->
+      {:error, {:validation_failed, "Message #{msg_id} already exists"}}
+
+    type not in [:question, :approval, :update, :blocker] ->
+      {:error, {:validation_failed, "Invalid message type: #{type}"}}
+
+    not is_binary(content) or content == "" ->
+      {:error, {:validation_failed, "Message content must be a non-empty string"}}
+
+    not is_binary(author) or author == "" ->
+      {:error, {:validation_failed, "Message author must be a non-empty string"}}
+
+    true ->
+      :ok
+  end
+end
+
+defp validate_event("approval_requested", %{message_id: msg_id, question: question, options: options}, state) do
+  cond do
+    Enum.any?(state.messages, &(&1.message_id == msg_id)) ->
+      {:error, {:validation_failed, "Message #{msg_id} already exists"}}
+
+    not is_binary(question) or question == "" ->
+      {:error, {:validation_failed, "Approval question must be a non-empty string"}}
+
+    not is_list(options) or length(options) < 2 ->
+      {:error, {:validation_failed, "Approval must have at least 2 options"}}
+
+    true ->
+      :ok
+  end
+end
+
+defp validate_event("approval_given", %{message_id: msg_id, choice: choice}, state) do
+  message = Enum.find(state.messages, &(&1.message_id == msg_id))
+
+  cond do
+    message == nil ->
+      {:error, {:validation_failed, "Message #{msg_id} not found"}}
+
+    message.type != :approval ->
+      {:error, {:validation_failed, "Message #{msg_id} is not an approval request"}}
+
+    message.approval_choice != nil ->
+      {:error, {:validation_failed, "Approval #{msg_id} has already been given"}}
+
+    choice not in message.approval_options ->
+      {:error, {:validation_failed, "Invalid approval choice: #{choice}"}}
+
+    true ->
+      :ok
+  end
+end
+
 defp validate_event(_event_type, _data, _state), do: :ok
 ```
 
@@ -1020,6 +1689,92 @@ def handle_call(:reload_state, _from, state) do
     {:error, reason} ->
       {:reply, {:error, reason}, state}
   end
+end
+```
+
+#### `handle_call/3` - get_workstream
+```elixir
+def handle_call({:get_workstream, workstream_id}, _from, state) do
+  case Map.get(state.projection.workstreams, workstream_id) do
+    nil -> {:reply, {:error, :not_found}, state}
+    workstream -> {:reply, {:ok, workstream}, state}
+  end
+end
+```
+
+#### `handle_call/3` - list_workstreams
+```elixir
+def handle_call(:list_workstreams, _from, state) do
+  {:reply, {:ok, state.projection.workstreams}, state}
+end
+```
+
+#### `handle_call/3` - get_active_workstreams
+```elixir
+def handle_call(:get_active_workstreams, _from, state) do
+  active = state.projection.workstreams
+    |> Map.values()
+    |> Enum.filter(fn ws -> ws.status == :in_progress end)
+
+  {:reply, {:ok, active}, state}
+end
+```
+
+#### `handle_call/3` - get_messages
+```elixir
+def handle_call({:get_messages, opts}, _from, state) do
+  messages = state.projection.messages
+    |> maybe_filter_by_thread_id(opts[:thread_id])
+    |> maybe_filter_by_workstream_id(opts[:workstream_id])
+    |> maybe_filter_by_type(opts[:type])
+    |> Enum.sort_by(& &1.posted_at, :desc)
+    |> maybe_limit(opts[:limit])
+
+  {:reply, {:ok, messages}, state}
+end
+
+defp maybe_filter_by_thread_id(messages, nil), do: messages
+defp maybe_filter_by_thread_id(messages, thread_id) do
+  # Return root message and all replies
+  Enum.filter(messages, fn msg ->
+    msg.thread_id == thread_id || msg.message_id == thread_id
+  end)
+end
+
+defp maybe_filter_by_workstream_id(messages, nil), do: messages
+defp maybe_filter_by_workstream_id(messages, workstream_id) do
+  Enum.filter(messages, fn msg -> msg.workstream_id == workstream_id end)
+end
+
+defp maybe_filter_by_type(messages, nil), do: messages
+defp maybe_filter_by_type(messages, type) do
+  Enum.filter(messages, fn msg -> msg.type == type end)
+end
+
+defp maybe_limit(messages, nil), do: messages
+defp maybe_limit(messages, limit) when is_integer(limit) and limit > 0 do
+  Enum.take(messages, limit)
+end
+defp maybe_limit(messages, _), do: messages
+```
+
+#### `handle_call/3` - get_inbox
+```elixir
+def handle_call({:get_inbox, opts}, _from, state) do
+  inbox = state.projection.inbox
+    |> maybe_filter_unread_only(opts[:unread_only?])
+    |> maybe_filter_by_recipient(opts[:recipient])
+    |> Enum.sort_by(& &1.created_at, :desc)
+
+  {:reply, {:ok, inbox}, state}
+end
+
+defp maybe_filter_unread_only(inbox, true), do: Enum.filter(inbox, & !&1.read?)
+defp maybe_filter_unread_only(inbox, _), do: inbox
+
+defp maybe_filter_by_recipient(inbox, nil), do: inbox
+defp maybe_filter_by_recipient(inbox, recipient) do
+  Enum.filter(inbox, fn notif -> notif.recipient == recipient end)
 end
 ```
 
