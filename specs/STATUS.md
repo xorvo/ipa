@@ -34,14 +34,15 @@
 - [x] Component 2.2 refactor plan created (Pod State Manager) - REFACTOR_PLAN.md
 - [x] Component 2.3 refactor plan created (Pod Scheduler) - REFACTOR_PLAN.md
 - [x] Component 2.6 refactor plan created (Pod LiveView UI) - REFACTOR_PLAN.md
-- [ ] Component 2.2 spec updated (apply refactor plan to full spec)
-- [ ] Component 2.3 spec updated (apply refactor plan to full spec)
+- [x] Component 2.2 spec updated (apply refactor plan to full spec) - ✅ COMPLETE + APPROVED (8.5/10)
+- [ ] Component 2.3 spec updated (apply refactor plan to full spec) - DEFERRED (too complex for single session)
 - [ ] Component 2.6 spec updated (apply refactor plan to full spec)
 
 **Architecture Review Tracking**:
 - [x] Component 2.7 (Communications Manager) - Score: 9.5/10 - ✅ APPROVED (All P0 fixes applied and validated)
 - [x] Component 2.8 (CLAUDE.md Templates) - Score: 8.5/10 - APPROVED with 2 P1 issues to address
 - [x] Component 2.2 Refactor Plan (Pod State Manager) - Score: 8.5/10 - ✅ APPROVED (All P0 fixes applied and validated)
+- [x] Component 2.2 Refactored Spec (Pod State Manager) - Score: 8.5/10 - ✅ APPROVED (P0 fixes applied: concurrency check + dependency failure)
 - [x] Component 2.3 Refactor Plan (Pod Scheduler) - Score: 9.0/10 - ✅ APPROVED (All 7 P0 fixes applied and validated, 3 P1 issues to address during implementation)
 - [x] Component 2.6 Refactor Plan (Pod LiveView UI) - Score: 6.5/10 - REVISE REQUIRED (8 P0 issues, unblocked by 2.2 & 2.7)
 
@@ -51,7 +52,7 @@
 |-----------|--------|----------|-----|-------|
 | 1.1 SQLite Event Store | ✅ Spec Approved | 10% | - | Foundation layer, spec complete, needs update for single stream model |
 | 2.1 Task Pod Supervisor | ✅ Spec Approved | 5% | - | Spec complete, blocked by 1.1 implementation |
-| 2.2 Pod State Manager | 🔄 Refactor Plan Ready | 10% | - | Refactor plan complete, needs spec update with workstream/message projections |
+| 2.2 Pod State Manager | ✅ Spec Refactored + Approved | 20% | - | Refactor complete! Added 750+ lines: workstreams, messages, inbox. Score: 8.5/10 |
 | 2.3 Pod Scheduler | 🔄 Refactor Plan Ready | 5% | - | Refactor plan complete, needs spec rewrite as orchestration engine |
 | 2.4 Pod Workspace Manager | ✅ Spec Approved | 10% | - | Spec complete, needs minor update for CLAUDE.md injection |
 | 2.5 Pod External Sync | ✅ Spec Approved | 5% | - | Spec complete, needs minor update for workstream reporting |
