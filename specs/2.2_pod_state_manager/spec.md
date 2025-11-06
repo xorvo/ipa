@@ -968,13 +968,28 @@ defp apply_event(%{
   version: version,
   inserted_at: timestamp
 }, state) do
+  # Update failed workstream
   updated_workstream = state.workstreams[ws_id]
     |> Map.put(:status, :failed)
     |> Map.put(:completed_at, timestamp)
     |> Map.put(:error, error)
 
+  # Mark dependent workstreams as blocked
+  updated_workstreams =
+    state.workstreams
+    |> Map.put(ws_id, updated_workstream)
+    |> Enum.map(fn {id, ws} ->
+      # If this workstream depends on the failed workstream, mark it as blocked
+      if ws_id in ws.blocking_on do
+        {id, %{ws | status: :blocked}}
+      else
+        {id, ws}
+      end
+    end)
+    |> Map.new()
+
   %{state |
-    workstreams: Map.put(state.workstreams, ws_id, updated_workstream),
+    workstreams: updated_workstreams,
     active_workstream_count: max(0, state.active_workstream_count - 1),
     version: version,
     updated_at: timestamp
@@ -1432,9 +1447,6 @@ defp validate_event("workstream_created", %{workstream_id: ws_id, spec: spec, de
     not is_list(deps) ->
       {:error, {:validation_failed, "Dependencies must be a list"}}
 
-    state.active_workstream_count >= state.max_workstream_concurrency ->
-      {:error, {:validation_failed, "Max workstream concurrency reached (#{state.max_workstream_concurrency})"}}
-
     true ->
       :ok
   end
@@ -1452,6 +1464,9 @@ defp validate_event("workstream_agent_started", %{workstream_id: ws_id, agent_id
 
     not Enum.empty?(workstream.blocking_on) ->
       {:error, {:validation_failed, "Workstream #{ws_id} has unresolved dependencies: #{inspect(workstream.blocking_on)}"}}
+
+    state.active_workstream_count >= state.max_workstream_concurrency ->
+      {:error, {:validation_failed, "Max workstream concurrency (#{state.max_workstream_concurrency}) reached"}}
 
     Enum.any?(state.agents, &(&1.agent_id == agent_id)) ->
       {:error, {:validation_failed, "Agent #{agent_id} already exists"}}
