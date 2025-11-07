@@ -1,9 +1,9 @@
-defmodule IpaNew.MixProject do
+defmodule Ipa.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :ipa_new,
+      app: :ipa,
       version: "0.1.0",
       elixir: "~> 1.15",
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -20,7 +20,7 @@ defmodule IpaNew.MixProject do
   # Type `mix help compile.app` for more information.
   def application do
     [
-      mod: {IpaNew.Application, []},
+      mod: {Ipa.Application, []},
       extra_applications: [:logger, :runtime_tools]
     ]
   end
@@ -58,14 +58,14 @@ defmodule IpaNew.MixProject do
        app: false,
        compile: false,
        depth: 1},
-      {:swoosh, "~> 1.16"},
-      {:req, "~> 0.5"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 0.26"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
-      {:bandit, "~> 1.5"}
+      {:bandit, "~> 1.5"},
+      {:elixir_uuid, "~> 1.2"},
+      {:claude_code, "~> 0.4.0"}
     ]
   end
 
@@ -82,10 +82,10 @@ defmodule IpaNew.MixProject do
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
-      "assets.build": ["compile", "tailwind ipa_new", "esbuild ipa_new"],
+      "assets.build": ["compile", "tailwind ipa", "esbuild ipa"],
       "assets.deploy": [
-        "tailwind ipa_new --minify",
-        "esbuild ipa_new --minify",
+        "tailwind ipa --minify",
+        "esbuild ipa --minify",
         "phx.digest"
       ],
       precommit: ["compile --warning-as-errors", "deps.unlock --unused", "format", "test"]

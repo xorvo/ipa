@@ -1,11 +1,11 @@
 import Config
 
 # Configure your database
-config :ipa_new, IpaNew.Repo,
+config :ipa, Ipa.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  database: "ipa_new_dev",
+  database: "ipa_dev",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
@@ -16,7 +16,7 @@ config :ipa_new, IpaNew.Repo,
 # The watchers configuration can be used to run external
 # watchers to your application. For example, we can use it
 # to bundle .js and .css sources.
-config :ipa_new, IpaNewWeb.Endpoint,
+config :ipa, IpaWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
   http: [ip: {127, 0, 0, 1}, port: String.to_integer(System.get_env("PORT") || "4000")],
@@ -25,8 +25,8 @@ config :ipa_new, IpaNewWeb.Endpoint,
   debug_errors: true,
   secret_key_base: "eO+xEtugDad3AYZ7e5pZyC2PGt01vSD0dnJlNQBRSvlAaLVyAXlODTsYcolWkb7H",
   watchers: [
-    esbuild: {Esbuild, :install_and_run, [:ipa_new, ~w(--sourcemap=inline --watch)]},
-    tailwind: {Tailwind, :install_and_run, [:ipa_new, ~w(--watch)]}
+    esbuild: {Esbuild, :install_and_run, [:ipa, ~w(--sourcemap=inline --watch)]},
+    tailwind: {Tailwind, :install_and_run, [:ipa, ~w(--watch)]}
   ]
 
 # ## SSL Support
@@ -53,18 +53,17 @@ config :ipa_new, IpaNewWeb.Endpoint,
 # different ports.
 
 # Watch static and templates for browser reloading.
-config :ipa_new, IpaNewWeb.Endpoint,
+config :ipa, IpaWeb.Endpoint,
   live_reload: [
     web_console_logger: true,
     patterns: [
       ~r"priv/static/(?!uploads/).*(js|css|png|jpeg|jpg|gif|svg)$",
       ~r"priv/gettext/.*(po)$",
-      ~r"lib/ipa_new_web/(?:controllers|live|components|router)/?.*\.(ex|heex)$"
+      ~r"lib/ipa_web/(?:controllers|live|components|router)/?.*\.(ex|heex)$"
     ]
   ]
 
-# Enable dev routes for dashboard and mailbox
-config :ipa_new, dev_routes: true
+config :ipa, dev_routes: true
 
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"
@@ -84,5 +83,3 @@ config :phoenix_live_view,
   # Enable helpful, but potentially expensive runtime checks
   enable_expensive_runtime_checks: true
 
-# Disable swoosh api client as it is only required for production adapters.
-config :swoosh, :api_client, false
