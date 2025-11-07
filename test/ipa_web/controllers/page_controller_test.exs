@@ -1,5 +1,5 @@
-defmodule IpaNewWeb.PageControllerTest do
-  use IpaNewWeb.ConnCase
+defmodule IpaWeb.PageControllerTest do
+  use IpaWeb.ConnCase
 
   test "GET /", %{conn: conn} do
     conn = get(conn, ~p"/")
