@@ -1,0 +1,35 @@
+13:29:20.749 [debug] handled notification client -> server workspace/didChangeWatchedFiles in 2ms
+13:29:20.751 [debug] handled notification client -> server workspace/didChangeWatchedFiles in 2ms
+13:29:20.758 [debug] handled notification client -> server workspace/didChangeWatchedFiles in 521µs
+13:29:20.759 [debug] handled notification client -> server workspace/didChangeWatchedFiles in 1ms
+13:29:20.784 [debug] handled notification client -> server workspace/didChangeWatchedFiles in 5ms
+13:29:21.046 [debug] handled notification client -> server workspace/didChangeWatchedFiles in 345µs
+13:29:21.483 [info] Resolved entity: {:call, Kernel, :defmodule, 2}
+13:29:21.525 [info] Resolved entity: {:call, Kernel, :defmodule, 2}
+13:29:21.534 [debug] handled request client -> server textDocument/codeAction in 58ms
+13:29:21.562 [debug] handled request client -> server textDocument/codeAction in 39ms
+13:29:21.596 [error] ** (FunctionClauseError) no function clause matching in XPExpert.Protocol.Conversions.to_elixir/2
+    (xp_expert 0.1.0-555b6b6) lib/expert/protocol/conversions.ex:22: XPExpert.Protocol.Conversions.to_elixir(%XPGenLSP.Structures.Range{end: %XPGenLSP.Structures.Position{character: 0, line: 748}, start: %XPGenLSP.Structures.Position{character: 0, line: 748}}, nil)
+    (xp_forge 0.1.0-555b6b6) lib/forge/protocol/convertible.ex:52: anonymous fn/4 in XPForge.Protocol.Convertible.Helpers.apply/3
+    (elixir 1.17.3) lib/enum.ex:4858: Enumerable.List.reduce/3
+    (elixir 1.17.3) lib/enum.ex:2585: Enum.reduce_while/3
+    (xp_forge 0.1.0-555b6b6) lib/forge/protocol/convertible.ex:182: XPForge.Protocol.Convertible.Any.to_native/2
+    (xp_expert 0.1.0-555b6b6) lib/expert/protocol/convert.ex:22: XPExpert.Protocol.Convert.to_native/1
+    (xp_expert 0.1.0-555b6b6) lib/expert.ex:93: XPExpert.handle_request/2
+    (xp_gen_lsp 0.11.1) lib/gen_lsp.ex:369: anonymous fn/2 in XPGenLSP.loop/3
+
+13:29:21.596 [debug] sent notification server -> client window/logMessage
+13:29:21.628 [error] ** (FunctionClauseError) no function clause matching in XPExpert.Provider.Handlers.CodeLens.reindex_lens/2
+    (xp_expert 0.1.0-555b6b6) lib/expert/provider/handlers/code_lens.ex:30: XPExpert.Provider.Handlers.CodeLens.reindex_lens(%XPForge.Project{root_uri: "file:///Users/horvohaoriwa/agent-workspaces/ipa", mix_exs_uri: "file:///Users/horvohaoriwa/agent-workspaces/ipa/mix.exs", mix_project?: true, mix_env: nil, mix_target: nil, env_variables: %{}, project_module: nil, entropy: 42677}, nil)
+    (xp_expert 0.1.0-555b6b6) lib/expert/provider/handlers/code_lens.ex:22: XPExpert.Provider.Handlers.CodeLens.handle/2
+    (xp_expert 0.1.0-555b6b6) lib/expert.ex:94: XPExpert.handle_request/2
+    (xp_gen_lsp 0.11.1) lib/gen_lsp.ex:369: anonymous fn/2 in XPGenLSP.loop/3
+    (xp_telemetry 1.3.0) /home/runner/work/expert/expert/apps/expert/deps/telemetry/src/telemetry.erl:324: :xp_telemetry.span/3
+    (xp_gen_lsp 0.11.1) lib/gen_lsp.ex:368: anonymous fn/5 in XPGenLSP.loop/3
+    (xp_gen_lsp 0.11.1) lib/gen_lsp.ex:592: anonymous fn/4 in XPGenLSP.attempt/4
+    (elixir 1.17.3) lib/task/supervised.ex:101: Task.Supervised.invoke_mfa/2
+
+13:29:21.628 [debug] sent notification server -> client window/logMessage
+13:30:00.869 [debug] handled notification client -> server workspace/didChangeWatchedFiles in 1ms
+13:30:00.869 [debug] handled notification client -> server workspace/didChangeWatchedFiles in 2ms
+13:30:00.879 [debug] handled notification client -> server workspace/didChangeWatchedFiles in 2ms
