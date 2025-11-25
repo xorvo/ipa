@@ -1,0 +1,87 @@
+# Task Context: <%= @task_title %>
+
+## Task Overview
+
+<%= @task_spec %>
+
+**Current Phase**: `<%= @task_phase %>`
+
+## Repository
+
+- **URL**: `<%= @repo_url %>`
+- **Branch**: `<%= @branch %>`
+
+## Workstreams
+
+<%= if @workstreams && length(@workstreams) > 0 do %>
+This task has been broken down into **<%= length(@workstreams) %>** workstream(s) for parallel execution:
+
+<%= for ws <- @workstreams do %>
+### `<%= ws.id %>`
+
+<%= ws.spec |> String.slice(0..200) %><%= if String.length(ws.spec) > 200 do %>...<% end %>
+
+- **Status**: <%= ws.status %>
+<%= if ws.dependencies && length(ws.dependencies) > 0 do %>- **Dependencies**: <%= Enum.join(ws.dependencies, ", ") %><% end %>
+<% end %>
+<% else %>
+This task has not been broken down into workstreams yet. Work will proceed as a single unit.
+<% end %>
+
+## Your Role
+
+You are working on this task within the IPA system. Your responsibilities:
+
+1. **Follow the spec-driven workflow**: Spec → Review → Code → Test → PR
+2. **Coordinate via communications**: Post questions, request approvals, share updates
+3. **Track progress**: Update workstream status as you complete work
+4. **Respect dependencies**: Wait for dependent workstreams to complete before starting
+5. **Test thoroughly**: Run tests before requesting review
+
+## Important Files
+
+- `specs/` - Specifications for all components
+- `STATUS.md` - Overall project status tracker
+- `CLAUDE.md` - Project-level instructions (this file's parent)
+
+## Getting Started
+
+1. Review the task spec above
+2. Check current phase and workstreams
+3. If you're assigned to a specific workstream, you'll have additional context
+4. Follow the development workflow outlined in the system context
+5. Communicate progress via the pod's messaging system
+
+## Communication
+
+When you need to:
+- **Ask a question**: Post a message of type `:question`
+- **Request approval**: Use the approval request system
+- **Share an update**: Post a message of type `:update`
+- **Report a blocker**: Post a message of type `:blocker`
+
+All messages are visible to the pod (human and other agents).
+
+## Testing
+
+```bash
+# Run all tests
+mix test
+
+# Run tests for this specific task component
+mix test test/path/to/component_test.exs
+```
+
+## Git Workflow
+
+```bash
+# Check status
+git status
+
+# Commit changes
+git add .
+git commit -m "Brief description of changes"
+
+# Create PR when ready
+gh pr create --title "Task: <%= @task_title %>" --body "..."
+```

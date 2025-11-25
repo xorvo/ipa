@@ -9,6 +9,10 @@ defmodule Ipa.Pod.CommunicationsManagerTest do
     # Generate unique task ID for each test
     task_id = "task-#{System.unique_integer([:positive, :monotonic])}"
 
+    # Configure notification recipients for inbox tests
+    original_config = Application.get_env(:ipa, CommunicationsManager, [])
+    Application.put_env(:ipa, CommunicationsManager, Keyword.put(original_config, :notification_recipients, ["user-test"]))
+
     # Create event stream (stream_type, stream_id)
     {:ok, ^task_id} = EventStore.start_stream("task", task_id)
 
@@ -35,6 +39,9 @@ defmodule Ipa.Pod.CommunicationsManagerTest do
 
       # Clean up event stream
       EventStore.delete_stream(task_id)
+
+      # Restore original config
+      Application.put_env(:ipa, CommunicationsManager, original_config)
     end)
 
     {:ok, task_id: task_id}

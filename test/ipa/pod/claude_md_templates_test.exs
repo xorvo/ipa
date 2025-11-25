@@ -244,14 +244,14 @@ defmodule Ipa.Pod.ClaudeMdTemplatesTest do
 
       # ws-db has no dependencies
       assert content =~ "has no dependencies"
-      assert content =~ "You can start immediately"
+      assert content =~ "can start immediately"
     end
 
     test "shows dependencies for later workstreams", %{task_id: task_id} do
       {:ok, content} = ClaudeMdTemplates.generate_workstream_level(task_id, "ws-ui")
 
       # ws-ui depends on ws-api
-      assert content =~ "Your workstream depends on these workstreams"
+      assert content =~ "depends on the following workstreams"
       assert content =~ "ws-api"
     end
 
@@ -283,7 +283,7 @@ defmodule Ipa.Pod.ClaudeMdTemplatesTest do
       {:ok, content} = ClaudeMdTemplates.generate_pod_level(task_id)
 
       # Should handle empty workstreams gracefully
-      assert content =~ "0 workstreams"
+      assert content =~ "not been broken down into workstreams yet"
     end
 
     test "handles workstream with no related workstreams" do
@@ -319,8 +319,9 @@ defmodule Ipa.Pod.ClaudeMdTemplatesTest do
 
       {:ok, content} = ClaudeMdTemplates.generate_workstream_level(task_id, "ws-only")
 
-      # Should mention being the only workstream
-      assert content =~ "only active workstream"
+      # Should handle single workstream (no related workstreams section)
+      assert content =~ "ws-only"
+      refute content =~ "Related Workstreams"
 
       # Cleanup (defensive)
       case Registry.lookup(Ipa.PodRegistry, {:pod_state, task_id}) do

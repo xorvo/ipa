@@ -302,6 +302,14 @@ defmodule Ipa.Pod.WorkspaceManagerTest do
       task_id = "task-#{UUID.uuid4()}"
       agent_id = "agent-#{UUID.uuid4()}"
 
+      # Use a temporary directory for workspace base path
+      temp_base = Path.join(System.tmp_dir!(), "ipa_ws_create_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(temp_base)
+
+      # Configure the temp base path for this test
+      original_config = Application.get_env(:ipa, WorkspaceManager, [])
+      Application.put_env(:ipa, WorkspaceManager, Keyword.put(original_config, :base_path, temp_base))
+
       # Create task stream
       {:ok, ^task_id} = EventStore.start_stream("task", task_id)
 
@@ -316,6 +324,10 @@ defmodule Ipa.Pod.WorkspaceManagerTest do
         end
 
         if Process.alive?(pid), do: GenServer.stop(pid)
+        # Restore original config
+        Application.put_env(:ipa, WorkspaceManager, original_config)
+        # Cleanup temp directory
+        File.rm_rf(temp_base)
       end)
 
       %{task_id: task_id, agent_id: agent_id, pid: pid}
@@ -383,6 +395,14 @@ defmodule Ipa.Pod.WorkspaceManagerTest do
       task_id = "task-#{UUID.uuid4()}"
       agent_id = "agent-#{UUID.uuid4()}"
 
+      # Use a temporary directory for workspace base path
+      temp_base = Path.join(System.tmp_dir!(), "ipa_ws_test_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(temp_base)
+
+      # Configure the temp base path for this test
+      original_config = Application.get_env(:ipa, WorkspaceManager, [])
+      Application.put_env(:ipa, WorkspaceManager, Keyword.put(original_config, :base_path, temp_base))
+
       # Create task stream
       {:ok, ^task_id} = EventStore.start_stream("task", task_id)
 
@@ -393,6 +413,10 @@ defmodule Ipa.Pod.WorkspaceManagerTest do
 
       on_exit(fn ->
         if Process.alive?(pid), do: GenServer.stop(pid)
+        # Restore original config
+        Application.put_env(:ipa, WorkspaceManager, original_config)
+        # Cleanup temp directory
+        File.rm_rf(temp_base)
       end)
 
       %{task_id: task_id, agent_id: agent_id, workspace_path: workspace_path, pid: pid}

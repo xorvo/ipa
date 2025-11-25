@@ -280,15 +280,20 @@ defmodule Ipa.EventStoreTest do
 
     test "filters streams by type" do
       {:ok, task1} = EventStore.start_stream("task")
-      {:ok, _agent} = EventStore.start_stream("agent")
+      {:ok, agent1} = EventStore.start_stream("agent")
       {:ok, task2} = EventStore.start_stream("task")
 
       {:ok, task_streams} = EventStore.list_streams("task")
-      stream_ids = Enum.map(task_streams, & &1.id)
+      task_stream_ids = Enum.map(task_streams, & &1.id)
 
-      assert length(stream_ids) == 2
-      assert task1 in stream_ids
-      assert task2 in stream_ids
+      # Should include the task streams created in this test
+      assert task1 in task_stream_ids
+      assert task2 in task_stream_ids
+      # Should NOT include the agent stream
+      refute agent1 in task_stream_ids
+
+      # Verify all returned streams are actually task type
+      assert Enum.all?(task_streams, fn s -> s.stream_type == "task" end)
     end
   end
 

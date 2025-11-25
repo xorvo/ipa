@@ -245,6 +245,10 @@ defmodule Ipa.PodSupervisor do
   """
   def list_pods do
     Ipa.PodRegistry.list_all()
+    |> Enum.filter(fn
+      {{:pod, _task_id}, _pid, _metadata} -> true
+      _ -> false
+    end)
     |> Enum.map(fn {{:pod, task_id}, pid, metadata} ->
       %{
         task_id: task_id,

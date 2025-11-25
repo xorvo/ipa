@@ -1,0 +1,150 @@
+# Workstream Context: <%= @workstream_id %>
+
+## Workstream Specification
+
+<%= @workstream_spec %>
+
+## Workstream Details
+
+- **Workstream ID**: `<%= @workstream_id %>`
+- **Status**: `<%= @workstream_status %>`
+
+<%= if @dependencies && length(@dependencies) > 0 do %>
+## Dependencies
+
+This workstream depends on the following workstreams completing first:
+
+<%= for dep_id <- @dependencies do %>
+- `<%= dep_id %>`
+<% end %>
+
+⚠️ **IMPORTANT**: Do not start work until all dependencies are completed.
+<% else %>
+## Dependencies
+
+✅ This workstream has no dependencies and can start immediately.
+<% end %>
+
+<%= if @related_workstreams && length(@related_workstreams) > 0 do %>
+## Related Workstreams
+
+Other workstreams in this task:
+
+<%= for ws <- @related_workstreams do %>
+### `<%= ws.id %>`
+
+<%= ws.spec |> String.slice(0..150) %><%= if String.length(ws.spec) > 150 do %>...<% end %>
+
+- **Status**: <%= ws.status %>
+<%= if ws.dependencies && length(ws.dependencies) > 0 do %>- **Dependencies**: <%= Enum.join(ws.dependencies, ", ") %><% end %>
+<% end %>
+<% end %>
+
+<%= if @dependent_workstreams && length(@dependent_workstreams) > 0 do %>
+## Dependent Workstreams
+
+⚠️ These workstreams are waiting for your completion:
+
+<%= for ws <- @dependent_workstreams do %>
+- `<%= ws.id %>` (Status: <%= ws.status %>)
+<% end %>
+<% end %>
+
+---
+
+## Task Context: <%= @task_title %>
+
+### Task Overview
+
+<%= @task_spec |> String.slice(0..300) %><%= if String.length(@task_spec) > 300 do %>...<% end %>
+
+**Current Phase**: `<%= @task_phase %>`
+
+### Repository
+
+- **URL**: `<%= @repo_url %>`
+- **Branch**: `<%= @branch %>`
+
+---
+
+## Your Role
+
+You are the **primary agent** for workstream `<%= @workstream_id %>`. Your responsibilities:
+
+1. **Focus on your workstream**: Complete the work defined in the workstream spec above
+2. **Coordinate with other workstreams**: Be aware of related workstreams and dependencies
+3. **Respect boundaries**: Don't modify code outside your workstream scope
+4. **Communicate progress**: Post updates as you hit milestones
+5. **Ask for help**: Post questions if you're blocked or need clarification
+
+## Workflow
+
+1. **Read the workstream spec** (above) carefully
+2. **Check dependencies**: Ensure all dependent workstreams are completed
+3. **Plan your approach**: Break down the work into steps
+4. **Implement**: Write code, following the spec
+5. **Test**: Run tests to verify correctness
+6. **Communicate**: Share updates and blockers
+7. **Complete**: Mark workstream as complete when done
+
+## Communication
+
+Post messages to the pod's communication system:
+
+- **Questions**: `{:question, "What approach should I take for X?"}`
+- **Updates**: `{:update, "Completed API implementation, starting tests"}`
+- **Blockers**: `{:blocker, "Need approval on database schema changes"}`
+- **Approvals**: Request approval for major decisions
+
+All messages are threaded and visible to humans and other agents in this pod.
+
+## Testing
+
+```bash
+# Run all tests
+mix test
+
+# Run tests for your component
+mix test test/path/to/your_component_test.exs
+
+# Run a specific test
+mix test test/path/to/your_component_test.exs:42
+```
+
+## Workspace
+
+Your isolated workspace contains:
+- A clone of the repository at branch `<%= @branch %>`
+- This CLAUDE.md file with full context
+- All project files and dependencies
+
+Any changes you make can be committed and pushed to the repository.
+
+## Coordination Points
+
+<%= if @dependencies && length(@dependencies) > 0 do %>
+⚠️ **Before starting**: Verify dependent workstreams are complete:
+<%= for dep_id <- @dependencies do %>
+- Check status of `<%= dep_id %>`
+<% end %>
+<% end %>
+
+<%= if @related_workstreams && length(@related_workstreams) > 0 do %>
+💡 **Awareness**: Other agents are working on related workstreams:
+<%= for ws <- @related_workstreams do %>
+- `<%= ws.id %>`
+<% end %>
+
+If you need to coordinate, use the communication system to post messages.
+<% end %>
+
+## Success Criteria
+
+Complete this workstream when:
+1. ✅ The workstream spec requirements are fully implemented
+2. ✅ All tests pass
+3. ✅ Code follows project conventions
+4. ✅ Changes are committed to git
+5. ✅ Status is updated to `:completed`
+
+Mark the workstream as complete by posting a completion update with evidence (test results, commit hash, etc.).

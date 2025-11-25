@@ -8,18 +8,18 @@ Phase 3: Pod Scheduler + Agents (Weeks 3-5)
 
 ## Overview
 
-The Pod Workspace Manager is responsible for managing isolated filesystem workspaces for agents executing within a pod. Its **primary role** is to integrate with the `aw` CLI tool to handle workspace lifecycle operations (create, destroy, list).
+The Pod Workspace Manager is responsible for managing isolated filesystem workspaces for agents executing within a pod. It handles workspace lifecycle operations (create, destroy, list) using native Elixir file operations.
 
 Each agent is spawned by the Pod Scheduler with its workspace path as the working directory (`cwd`). The agent then works directly in that workspace through the Claude Code SDK, using standard file operations.
 
 ## Purpose
 
-- **Primary**: Integrate with `aw` CLI to manage workspace lifecycle
+- **Primary**: Manage workspace lifecycle using native Elixir file operations
 - Provide isolated execution environments for agents
 - Track workspace metadata and lifecycle events
 - Record workspace operations to the event store
 - Support future multi-workspace architectures
-- **Secondary**: Provide optional Elixir file operation utilities for pod-level workspace inspection
+- Provide file operation utilities for pod-level workspace inspection
 
 ## Architecture Context
 
@@ -34,18 +34,18 @@ Each agent is spawned by the Pod Scheduler with its workspace path as the workin
 - `IpaWeb.Pod.TaskLive` - Real-time UI for task
 
 **Dependencies**:
-- **`aw` CLI tool** - External command-line tool for workspace operations
 - Event Store (for workspace lifecycle events)
 - Pod State (for reading task context)
-- Elixir `File` module (for optional file utilities)
+- Elixir `File` module (for all file operations)
 
 ## Key Responsibilities
 
-1. **Workspace Lifecycle via `aw` CLI (PRIMARY)**
-   - Execute `aw create` to create isolated workspaces for agents
-   - Execute `aw destroy` to clean up workspaces after agent completion
-   - Execute `aw list` to query active workspaces
-   - Parse `aw` CLI output and handle errors
+1. **Workspace Lifecycle Management (PRIMARY)**
+   - Create isolated workspace directories for agents using `File.mkdir_p`
+   - Set up workspace structure (.ipa/, work/, output/ directories)
+   - Write workspace metadata files (task_spec.json, workspace_config.json, context.json)
+   - Inject CLAUDE.md files with agent context
+   - Clean up workspaces after agent completion using `File.rm_rf`
    - Record workspace lifecycle events to event store
 
 2. **Agent Execution Coordination**
@@ -60,9 +60,10 @@ Each agent is spawned by the Pod Scheduler with its workspace path as the workin
    - Maintain workspace metadata (path, created_at, config)
    - Record workspace events (creation, cleanup)
 
-4. **Optional Utilities (SECONDARY)**
+4. **File Operation Utilities**
    - Provide Elixir file read/write operations for pod-level inspection
-   - Path validation utilities (not used by agents directly)
+   - Path validation utilities (security checks for path traversal, symlinks)
+   - File tree listing capabilities
    - These are for pod infrastructure to inspect workspace contents if needed
 
 ## Workspace Structure
@@ -103,194 +104,84 @@ Each workspace is created with a configuration:
 }
 ```
 
-## `aw` CLI Integration
+## Implementation Approach
 
-The WorkspaceManager's primary responsibility is integrating with the external `aw` CLI tool. The `aw` tool manages workspace lifecycle operations.
+The WorkspaceManager uses native Elixir file operations to manage workspace lifecycle:
 
-### `aw` Commands
+### Workspace Creation
 
-#### `aw create`
-Creates a new isolated workspace.
-
-**Command:**
-```bash
-aw create --id <workspace_id> [--base-path <path>] [--config <json>]
-```
-
-**Parameters:**
-- `--id` - Workspace identifier (format: `{task_id}/{agent_id}`)
-- `--base-path` - Optional base directory (default: `/ipa/workspaces`)
-- `--config` - Optional JSON configuration
-
-**Returns:**
-- **Success**: Prints workspace path to stdout
-- **Error**: Non-zero exit code with error message to stderr
-
-**Example:**
-```bash
-$ aw create --id task-123/agent-456 --base-path /ipa/workspaces
-/ipa/workspaces/task-123/agent-456
-
-$ echo $?
-0
-```
-
-#### `aw destroy`
-Destroys an existing workspace and all its contents.
-
-**Command:**
-```bash
-aw destroy --id <workspace_id> [--force]
-```
-
-**Parameters:**
-- `--id` - Workspace identifier (format: `{task_id}/{agent_id}`)
-- `--force` - Optional flag to force deletion even if files are in use
-
-**Returns:**
-- **Success**: Exit code 0
-- **Error**: Non-zero exit code with error message to stderr
-
-**Example:**
-```bash
-$ aw destroy --id task-123/agent-456
-Workspace destroyed: /ipa/workspaces/task-123/agent-456
-
-$ echo $?
-0
-```
-
-#### `aw list`
-Lists all workspaces, optionally filtered by task.
-
-**Command:**
-```bash
-aw list [--task-id <task_id>] [--format json]
-```
-
-**Parameters:**
-- `--task-id` - Optional filter by task ID
-- `--format` - Output format (`text` or `json`, default: `text`)
-
-**Returns:**
-- **Success**: List of workspace IDs to stdout, exit code 0
-- **Error**: Non-zero exit code with error message to stderr
-
-**Example (text format):**
-```bash
-$ aw list --task-id task-123
-task-123/agent-456
-task-123/agent-789
-```
-
-**Example (JSON format):**
-```bash
-$ aw list --task-id task-123 --format json
-[
-  {
-    "workspace_id": "task-123/agent-456",
-    "path": "/ipa/workspaces/task-123/agent-456",
-    "created_at": "2025-01-05T12:00:00Z"
-  },
-  {
-    "workspace_id": "task-123/agent-789",
-    "path": "/ipa/workspaces/task-123/agent-789",
-    "created_at": "2025-01-05T12:05:00Z"
-  }
-]
-```
-
-### Elixir Integration with `aw` CLI
-
-The WorkspaceManager wraps `aw` CLI commands using Elixir's `System.cmd/3`:
+Uses `File.mkdir_p/1` to create the workspace directory structure:
 
 ```elixir
-defp execute_aw_create(workspace_id, base_path, config) do
-  args = ["create", "--id", workspace_id, "--base-path", base_path]
-  args = if config, do: args ++ ["--config", Jason.encode!(config)], else: args
+defp create_workspace_structure(workspace_path, task_id, agent_id, config) do
+  # Create main workspace directory
+  File.mkdir_p!(workspace_path)
 
-  case System.cmd("aw", args, stderr_to_stdout: true) do
-    {output, 0} ->
-      workspace_path = String.trim(output)
-      {:ok, workspace_path}
+  # Create subdirectories
+  File.mkdir_p!(Path.join(workspace_path, ".ipa"))
+  File.mkdir_p!(Path.join(workspace_path, "work"))
+  File.mkdir_p!(Path.join(workspace_path, "output"))
 
-    {error_output, exit_code} ->
-      Logger.error("aw create failed: #{error_output}")
-      {:error, {:aw_command_failed, exit_code, error_output}}
-  end
+  # Write metadata files
+  task_spec_path = Path.join([workspace_path, ".ipa", "task_spec.json"])
+  File.write!(task_spec_path, Jason.encode!(%{task_id: task_id, agent_id: agent_id}, pretty: true))
+
+  workspace_config_path = Path.join([workspace_path, ".ipa", "workspace_config.json"])
+  File.write!(workspace_config_path, Jason.encode!(config, pretty: true))
+
+  context_path = Path.join([workspace_path, ".ipa", "context.json"])
+  File.write!(context_path, Jason.encode!(%{
+    created_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+    workspace_path: workspace_path
+  }, pretty: true))
+
+  :ok
 end
+```
 
-defp execute_aw_destroy(workspace_id, opts \\ []) do
-  force = Keyword.get(opts, :force, false)
-  args = ["destroy", "--id", workspace_id]
-  args = if force, do: args ++ ["--force"], else: args
+### CLAUDE.md Injection
 
-  case System.cmd("aw", args, stderr_to_stdout: true) do
-    {_output, 0} ->
+When creating a workspace, optionally inject a CLAUDE.md file:
+
+```elixir
+if claude_md = config[:claude_md] do
+  claude_md_path = Path.join(workspace_path, "CLAUDE.md")
+  File.write(claude_md_path, claude_md)
+end
+```
+
+### Workspace Cleanup
+
+Uses `File.rm_rf/1` to recursively delete the workspace:
+
+```elixir
+defp cleanup_workspace_files(workspace_path) do
+  case File.rm_rf(workspace_path) do
+    {:ok, _} ->
+      Logger.info("Deleted workspace: #{workspace_path}")
       :ok
 
-    {error_output, exit_code} ->
-      Logger.error("aw destroy failed: #{error_output}")
-      {:error, {:aw_command_failed, exit_code, error_output}}
-  end
-end
-
-defp execute_aw_list(task_id) do
-  args = ["list", "--task-id", task_id, "--format", "json"]
-
-  case System.cmd("aw", args, stderr_to_stdout: true) do
-    {output, 0} ->
-      case Jason.decode(output) do
-        {:ok, workspaces} ->
-          agent_ids = Enum.map(workspaces, fn ws ->
-            ws["workspace_id"] |> String.split("/") |> List.last()
-          end)
-          {:ok, agent_ids}
-
-        {:error, reason} ->
-          {:error, {:json_parse_error, reason}}
-      end
-
-    {error_output, exit_code} ->
-      Logger.error("aw list failed: #{error_output}")
-      {:error, {:aw_command_failed, exit_code, error_output}}
+    {:error, reason, _} ->
+      Logger.error("Failed to delete workspace: #{workspace_path}, reason: #{inspect(reason)}")
+      {:error, {:cleanup_failed, reason}}
   end
 end
 ```
 
-### Error Handling
+### Path Security
 
-When `aw` commands fail:
-1. Log the error with full output
-2. Return structured error tuple: `{:error, {:aw_command_failed, exit_code, message}}`
-3. Do NOT crash the GenServer
-4. Record error event to event store (if possible)
-
-### `aw` CLI Availability
-
-The `aw` tool must be installed and available in the system PATH. On GenServer initialization, verify `aw` is available:
-
-```elixir
-def init(opts) do
-  # Verify aw CLI is available
-  case System.cmd("which", ["aw"]) do
-    {_path, 0} ->
-      Logger.info("aw CLI tool found")
-      # Continue with initialization...
-
-    _ ->
-      Logger.error("aw CLI tool not found in PATH")
-      {:stop, :aw_cli_not_found}
-  end
-end
-```
+All file operations include security checks:
+- Validate relative paths (no `..`, no absolute paths)
+- Check path boundaries (ensure within workspace)
+- Detect and reject symlinks that escape workspace
+- Validate against null bytes and overly long paths
 
 ## Public API
 
 ### Module: `Ipa.Pod.WorkspaceManager`
 
 #### `create_workspace/3`
-Creates a new workspace for an agent by executing `aw create`.
+Creates a new workspace for an agent using native Elixir file operations.
 
 ```elixir
 @spec create_workspace(task_id :: String.t(), agent_id :: String.t(), config :: map()) ::
@@ -300,36 +191,37 @@ Creates a new workspace for an agent by executing `aw create`.
 **Parameters:**
 - `task_id` - UUID of the task
 - `agent_id` - UUID of the agent
-- `config` - Workspace configuration map (optional fields)
+- `config` - Workspace configuration map (optional fields):
+  - `:max_size_mb` - Maximum workspace size in MB
+  - `:git_config` - Git configuration
+  - `:claude_md` - CLAUDE.md content to inject
 
 **Returns:**
-- `{:ok, workspace_path}` - Workspace created successfully via `aw create`
+- `{:ok, workspace_path}` - Workspace created successfully
 - `{:error, :workspace_exists}` - Workspace already exists
-- `{:error, {:aw_command_failed, exit_code, message}}` - `aw create` command failed
 - `{:error, reason}` - Creation failed
 
 **Implementation:**
-1. Construct workspace_id: `"#{task_id}/#{agent_id}"`
-2. Execute `aw create --id <workspace_id> --base-path <base_path> [--config <json>]`
-3. Parse workspace path from `aw` stdout
-4. Add workspace to GenServer state
-5. Append `workspace_created` event to event store
-6. Broadcast to pod pub-sub: `{:workspace_created, task_id, agent_id, workspace_path}`
+1. Construct workspace path: `/ipa/workspaces/{task_id}/{agent_id}`
+2. Create directory structure using `File.mkdir_p!`
+3. Write metadata files (.ipa/task_spec.json, etc.)
+4. Inject CLAUDE.md if provided
+5. Add workspace to GenServer state
+6. Append `workspace_created` event to event store
+7. Broadcast to pod pub-sub: `{:workspace_created, task_id, agent_id, workspace_path}`
 
 **Example:**
 ```elixir
 {:ok, path} = Ipa.Pod.WorkspaceManager.create_workspace(
   "task-123",
   "agent-456",
-  %{max_size_mb: 500, git_config: %{enabled: true}}
+  %{max_size_mb: 500, git_config: %{enabled: true}, claude_md: "# Task Context..."}
 )
 # => {:ok, "/ipa/workspaces/task-123/agent-456"}
 ```
 
-**Note**: The `aw create` command handles actual workspace creation, directory structure, and metadata initialization.
-
 #### `cleanup_workspace/2`
-Removes a workspace and all its contents by executing `aw destroy`.
+Removes a workspace and all its contents using `File.rm_rf`.
 
 ```elixir
 @spec cleanup_workspace(task_id :: String.t(), agent_id :: String.t(), opts :: keyword()) ::
@@ -343,14 +235,14 @@ Removes a workspace and all its contents by executing `aw destroy`.
   - `:force` - Force deletion even if files are in use (default: false)
 
 **Returns:**
-- `:ok` - Workspace cleaned up successfully via `aw destroy`
+- `:ok` - Workspace cleaned up successfully
 - `{:error, :workspace_not_found}` - Workspace doesn't exist
-- `{:error, {:aw_command_failed, exit_code, message}}` - `aw destroy` command failed
-- `{:error, reason}` - Cleanup failed
+- `{:error, {:cleanup_failed, reason}}` - Cleanup failed
+- `{:error, reason}` - Other errors
 
 **Implementation:**
-1. Construct workspace_id: `"#{task_id}/#{agent_id}"`
-2. Execute `aw destroy --id <workspace_id> [--force]`
+1. Get workspace path from GenServer state
+2. Delete workspace directory using `File.rm_rf`
 3. Remove workspace from GenServer state
 4. Append `workspace_cleanup` event to event store
 5. Broadcast to pod pub-sub: `{:workspace_cleanup, task_id, agent_id}`
@@ -358,12 +250,7 @@ Removes a workspace and all its contents by executing `aw destroy`.
 **Example:**
 ```elixir
 :ok = Ipa.Pod.WorkspaceManager.cleanup_workspace("task-123", "agent-456")
-
-# Force cleanup if files are in use
-:ok = Ipa.Pod.WorkspaceManager.cleanup_workspace("task-123", "agent-456", force: true)
 ```
-
-**Note**: The `aw destroy` command handles actual workspace deletion and cleanup.
 
 #### `read_file/3`
 Reads a file from within a workspace (with path validation).

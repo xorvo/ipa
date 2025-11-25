@@ -4,12 +4,12 @@ defmodule Ipa.Pod.WorkspaceManager do
 
   ## Primary Responsibilities
 
-  - **Workspace Lifecycle via `aw` CLI**: Creates, destroys, and lists workspaces by
-    executing the external `aw` CLI tool
+  - **Workspace Lifecycle Management**: Creates, destroys, and lists workspaces using
+    native Elixir file operations (`File.mkdir_p`, `File.rm_rf`)
   - **Agent Execution Coordination**: Provides workspace paths to Pod Scheduler for
     agent spawning (agents work directly in workspace via Claude Code SDK)
   - **Workspace State Tracking**: Maintains workspace metadata and lifecycle events
-  - **Optional File Utilities**: Provides Elixir file operations for pod-level inspection
+  - **File Utilities**: Provides Elixir file operations for pod-level inspection
 
   ## Architecture
 
@@ -78,7 +78,7 @@ defmodule Ipa.Pod.WorkspaceManager do
   ## Returns
 
   - `{:ok, pid}` - GenServer started successfully
-  - `{:stop, reason}` - Failed to start (e.g., `aw` CLI not found)
+  - `{:stop, reason}` - Failed to start (e.g., base path creation failed)
   """
   def start_link(opts) do
     task_id = Keyword.fetch!(opts, :task_id)
@@ -87,7 +87,7 @@ defmodule Ipa.Pod.WorkspaceManager do
   end
 
   @doc """
-  Creates a new workspace for an agent by executing `aw create`.
+  Creates a new workspace for an agent using native Elixir file operations.
 
   The workspace path is returned and can be used as the `cwd` parameter when
   spawning the agent via the Claude Code SDK.
@@ -122,7 +122,7 @@ defmodule Ipa.Pod.WorkspaceManager do
   end
 
   @doc """
-  Removes a workspace and all its contents by executing `aw destroy`.
+  Removes a workspace and all its contents using `File.rm_rf`.
 
   ## Parameters
 
