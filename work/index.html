@@ -61,8 +61,46 @@
     </button>
   </div>
 
-  <!-- Audio container for sound effects (will be implemented in ws-5) -->
-  <div id="audio-container" aria-hidden="true"></div>
+  <!-- Audio controls panel (ws-5: Sound effects) -->
+  <div id="audio-controls" class="audio-controls">
+    <div class="audio-controls-header">
+      <span class="audio-controls-title">AUDIO</span>
+      <span id="audio-status" class="audio-status">Audio: Off</span>
+    </div>
+    <div class="audio-controls-buttons">
+      <button id="audio-toggle" class="audio-btn" aria-label="Toggle audio" aria-pressed="false" title="Toggle Audio On/Off">
+        <svg class="audio-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+          <path class="audio-waves" d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+          <path class="audio-waves" d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+        </svg>
+        <span class="audio-btn-label">Power</span>
+      </button>
+      <button id="audio-mute" class="audio-btn" aria-label="Mute audio" aria-pressed="false" title="Mute/Unmute">
+        <svg class="audio-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+          <line class="mute-line" x1="23" y1="9" x2="17" y2="15"></line>
+          <line class="mute-line" x1="17" y1="9" x2="23" y2="15"></line>
+        </svg>
+        <span class="audio-btn-label">Mute</span>
+      </button>
+      <button id="tick-toggle" class="audio-btn active" aria-label="Toggle tick sounds" aria-pressed="true" title="Toggle Tick Sounds">
+        <svg class="audio-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polyline points="12 6 12 12 16 14"></polyline>
+        </svg>
+        <span class="audio-btn-label">Tick</span>
+      </button>
+      <button id="ambient-toggle" class="audio-btn active" aria-label="Toggle ambient sound" aria-pressed="true" title="Toggle Ambient Drone">
+        <svg class="audio-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"></path>
+          <circle cx="12" cy="12" r="3"></circle>
+        </svg>
+        <span class="audio-btn-label">Ambient</span>
+      </button>
+    </div>
+    <p class="audio-hint">Click anywhere to enable audio</p>
+  </div>
 
   <!-- Main JavaScript entry point -->
   <script type="module" src="/src/main.js"></script>
