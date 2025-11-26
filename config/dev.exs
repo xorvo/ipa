@@ -83,3 +83,9 @@ config :phoenix_live_view,
   # Enable helpful, but potentially expensive runtime checks
   enable_expensive_runtime_checks: true
 
+# Workspace Manager - use local path for development
+config :ipa, Ipa.Pod.WorkspaceManager,
+  base_path: Path.expand("priv/workspaces"),
+  default_max_size_mb: 1000,
+  cleanup_on_pod_shutdown: true
+

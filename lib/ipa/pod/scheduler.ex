@@ -369,6 +369,14 @@ defmodule Ipa.Pod.Scheduler do
     end
   end
 
+  # Catch-all handler for unexpected messages (e.g., :workspace_created from WorkspaceManager)
+  @doc false
+  @impl true
+  def handle_info(msg, state) do
+    Logger.debug("Scheduler ignoring message: #{inspect(msg)}")
+    {:noreply, state}
+  end
+
   @doc false
   @impl true
   def handle_call({:interrupt_agent, agent_id}, _from, state) do
@@ -477,7 +485,29 @@ defmodule Ipa.Pod.Scheduler do
         {:wait, :task_cancelled}
 
       :spec_clarification ->
-        {:wait, :waiting_for_spec}
+        # Check if spec is approved and request transition to planning
+        spec_approved = task_state.spec != nil &&
+          (task_state.spec[:approved?] || task_state.spec["approved?"] || false)
+
+        # Check if there's already a pending transition to planning
+        has_pending_planning_transition = Enum.any?(
+          task_state.pending_transitions || [],
+          fn t -> t.to_phase == :planning || t.to_phase == "planning" end
+        )
+
+        cond do
+          # Already have a pending transition - wait for approval
+          has_pending_planning_transition ->
+            {:approve_required, :phase_transition}
+
+          # Spec approved and no pending transition - request transition
+          spec_approved ->
+            {:transition, :planning, "Spec approved, proceeding to planning phase"}
+
+          # Spec not approved - wait
+          true ->
+            {:wait, :waiting_for_spec}
+        end
     end
   rescue
     ArgumentError ->
@@ -493,6 +523,8 @@ defmodule Ipa.Pod.Scheduler do
   defp evaluate_planning(task_state, scheduler_state) do
     workstreams = task_state.workstreams || %{}
     plan_approved = task_state.plan != nil && task_state.plan.approved?
+    plan_has_workstreams = task_state.plan != nil &&
+      (task_state.plan[:workstreams] || task_state.plan["workstreams"] || []) != []
 
     cond do
       # Workstreams created and plan approved → transition to workstream_execution
@@ -502,6 +534,10 @@ defmodule Ipa.Pod.Scheduler do
       # Workstreams created but not approved → wait for approval
       map_size(workstreams) > 0 && !plan_approved ->
         {:approve_required, :workstream_plan}
+
+      # Plan approved with workstream data but workstreams not created yet → create them
+      plan_approved && plan_has_workstreams && map_size(workstreams) == 0 ->
+        {:create_workstreams, task_state.plan}
 
       # Planning agent completed → parse and create workstreams
       planning_agent_completed?(task_state) ->
@@ -633,7 +669,7 @@ defmodule Ipa.Pod.Scheduler do
     active_count >= max
   end
 
-  # P0#2: Detect deadlock (pending workstreams blocked but nothing running)
+  # P0#2: Detect deadlock (pending workstreams blocked but nothing running AND nothing can start)
   defp detect_deadlock(workstreams) do
     pending_with_blocks =
       workstreams
@@ -645,7 +681,14 @@ defmodule Ipa.Pod.Scheduler do
       |> Map.values()
       |> Enum.any?(fn ws -> ws.status == :in_progress end)
 
-    if length(pending_with_blocks) > 0 && !any_in_progress do
+    # Check if there are any pending workstreams that CAN be started (no blocking dependencies)
+    any_ready_to_start =
+      workstreams
+      |> Map.values()
+      |> Enum.any?(fn ws -> ws.status == :pending && Enum.empty?(ws.blocking_on || []) end)
+
+    # Only deadlock if there are blocked workstreams AND nothing is running AND nothing can be started
+    if length(pending_with_blocks) > 0 && !any_in_progress && !any_ready_to_start do
       {:deadlock, pending_with_blocks}
     else
       :no_deadlock
@@ -864,9 +907,9 @@ defmodule Ipa.Pod.Scheduler do
         **IMPORTANT**: Mark your work as complete by creating a file called `WORKSTREAM_COMPLETE.md` with a summary of what you accomplished.
         """
 
-        # Spawn Claude Code agent in background (linked to scheduler process)
+        # Spawn Claude Code agent in background (monitored, not linked - so scheduler doesn't crash if agent crashes)
         agent_pid =
-          spawn_link(fn ->
+          spawn(fn ->
             spawn_claude_agent(
               agent_id,
               task_id,
@@ -877,6 +920,9 @@ defmodule Ipa.Pod.Scheduler do
             )
           end)
 
+        # Monitor the process so we can track when it completes
+        Process.monitor(agent_pid)
+
         # Track agent in scheduler state
         active_agents =
           Map.put(scheduler_state.active_workstream_agents, workstream_id, %{
@@ -885,7 +931,7 @@ defmodule Ipa.Pod.Scheduler do
             started_at: DateTime.utc_now()
           })
 
-        # Append agent_started event
+        # Append agent_started event (don't check version - workspace creation already advanced it)
         Ipa.Pod.State.append_event(
           task_id,
           "agent_started",
@@ -895,7 +941,7 @@ defmodule Ipa.Pod.Scheduler do
             workstream_id: workstream_id,
             prompt: prompt
           },
-          task_state.version,
+          nil,  # Don't check version - defensive to avoid conflicts
           actor_id: "scheduler"
         )
 
@@ -907,7 +953,7 @@ defmodule Ipa.Pod.Scheduler do
             workstream_id: workstream_id,
             agent_id: agent_id
           },
-          task_state.version,
+          nil,  # Don't check version - defensive to avoid conflicts
           actor_id: "scheduler"
         )
 
@@ -945,8 +991,8 @@ defmodule Ipa.Pod.Scheduler do
       {:ok, workspace_path} ->
         Logger.info("Created PR agent workspace", workspace_path: workspace_path)
 
-        # Spawn Claude Code agent in background
-        spawn_link(fn ->
+        # Spawn Claude Code agent in background (monitored, not linked)
+        agent_pid = spawn(fn ->
           spawn_claude_agent(
             agent_id,
             task_id,
@@ -956,7 +1002,10 @@ defmodule Ipa.Pod.Scheduler do
           )
         end)
 
-        # Append agent_started event
+        # Monitor the process
+        Process.monitor(agent_pid)
+
+        # Append agent_started event (don't check version - defensive)
         Ipa.Pod.State.append_event(
           task_id,
           "agent_started",
@@ -966,7 +1015,7 @@ defmodule Ipa.Pod.Scheduler do
             workstream_id: nil,
             prompt: prompt
           },
-          task_state.version,
+          nil,  # Don't check version - defensive to avoid conflicts
           actor_id: "scheduler"
         )
 
@@ -1368,7 +1417,7 @@ defmodule Ipa.Pod.Scheduler do
   # ----------------------------------------------------------------------------
 
   # Spawn a Claude Code agent with streaming output
-  # This function runs in a background process (spawned via spawn_link)
+  # This function runs in a background process (spawned via spawn + monitor)
   defp spawn_claude_agent(agent_id, task_id, workspace_path, prompt, agent_type, workstream_id \\ nil) do
     Logger.info("Starting Claude Code agent",
       agent_id: agent_id,

@@ -12,7 +12,7 @@ IPA (Intelligent Process Automation) is a pod-based task management system built
 
 - **Backend**: Elixir/Phoenix with LiveView
 - **State Management**: Event Sourcing with custom implementation
-- **Persistence**: SQLite with JSON events (portable, language-agnostic)
+- **Persistence**: PostgreSQL with JSON events via Ecto
 - **Agent Runtime**: Elixir Claude Code SDK (https://hexdocs.pm/claude_code/readme.html)
 - **Concurrency**: Elixir supervision trees
 - **Version Control**: Git (repo: git@github.com:xorvo/ipa.git)
@@ -58,8 +58,8 @@ Each workspace gets the appropriate CLAUDE.md file injected at creation time.
 ### Three-Layer Architecture
 
 **Layer 1: Shared Persistence**
-- SQLite database for event storage
-- Events stored as JSON for portability and language-agnosticism
+- PostgreSQL database for event storage
+- Events stored as JSON (JSONB) columns via Ecto
 - Single stream per task (workstream events stored in task stream)
 - Schema: streams, events, snapshots tables
 - Event replay for state reconstruction
@@ -123,7 +123,7 @@ For each component, follow this sequence:
 ## Development Phases
 
 **Phase 1**: Shared Persistence + Pod Infrastructure (Weeks 1-3)
-- SQLite Event Store with JSON events (single stream per task)
+- PostgreSQL Event Store with JSON events (single stream per task)
 - Pod Supervisor basic structure
 - Pod State Manager with in-memory projections (workstreams, messages)
 - Workspace Manager with CLAUDE.md injection
@@ -166,8 +166,8 @@ For each component, follow this sequence:
 # Install dependencies
 mix deps.get
 
-# Create database (SQLite file created automatically)
-# Database will be at: priv/ipa.db
+# Create database (PostgreSQL required)
+mix ecto.create
 
 # Run migrations (if using Ecto migrations)
 mix ecto.migrate
@@ -197,17 +197,17 @@ iex -S mix phx.server
 ### Database Operations
 
 ```bash
-# Query SQLite database directly
-sqlite3 priv/ipa.db
+# Query PostgreSQL database directly
+PGPASSWORD=postgres psql -h localhost -U postgres -d ipa_dev
 
 # Inspect events for a task
-sqlite3 priv/ipa.db "SELECT * FROM events WHERE task_id = 'uuid';"
+PGPASSWORD=postgres psql -h localhost -U postgres -d ipa_dev -c "SELECT * FROM events WHERE stream_id = 'task-uuid';"
 
 # Count events
-sqlite3 priv/ipa.db "SELECT COUNT(*) FROM events;"
+PGPASSWORD=postgres psql -h localhost -U postgres -d ipa_dev -c "SELECT COUNT(*) FROM events;"
 
 # Backup database
-cp priv/ipa.db priv/ipa_backup_$(date +%Y%m%d).db
+pg_dump -h localhost -U postgres ipa_dev > ipa_backup_$(date +%Y%m%d).sql
 ```
 
 ## Key Interfaces & Modules
@@ -364,17 +364,17 @@ Both connectors handle:
 
 ## Event Store Schema
 
-The SQLite database uses a **streams-based** event sourcing model. Streams are generic sequences of events that can represent tasks, agents, or any other aggregate.
+The PostgreSQL database uses a **streams-based** event sourcing model. Streams are generic sequences of events that can represent tasks, agents, or any other aggregate.
 
 ### Streams Table
 A stream is a sequence of related events (e.g., all events for a task).
 
 ```sql
 CREATE TABLE streams (
-  id TEXT PRIMARY KEY,              -- UUID (stream_id)
-  stream_type TEXT NOT NULL,        -- Type: "task", "agent", etc.
-  created_at INTEGER NOT NULL,      -- Unix timestamp
-  updated_at INTEGER NOT NULL       -- Updated on each event append
+  id VARCHAR(255) PRIMARY KEY,      -- UUID (stream_id)
+  stream_type VARCHAR(50) NOT NULL, -- Type: "task", "agent", etc.
+  created_at BIGINT NOT NULL,       -- Unix timestamp
+  updated_at BIGINT NOT NULL        -- Updated on each event append
 );
 
 CREATE INDEX idx_streams_type ON streams(stream_type);
@@ -386,16 +386,16 @@ CREATE INDEX idx_streams_updated ON streams(updated_at);
 ### Events Table
 ```sql
 CREATE TABLE events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  stream_id TEXT NOT NULL,
-  event_type TEXT NOT NULL,         -- e.g., "task_created", "agent_started"
-  event_data TEXT NOT NULL,         -- JSON
+  id BIGSERIAL PRIMARY KEY,
+  stream_id VARCHAR(255) NOT NULL,
+  event_type VARCHAR(100) NOT NULL, -- e.g., "task_created", "agent_started"
+  event_data JSONB NOT NULL,        -- JSON (JSONB for better querying)
   version INTEGER NOT NULL,         -- Incremental per stream
-  actor_id TEXT,                    -- Who caused this event
-  causation_id TEXT,                -- Event that caused this event
-  correlation_id TEXT,              -- For tracing related events
-  metadata TEXT,                    -- JSON (additional context)
-  inserted_at INTEGER NOT NULL,     -- Unix timestamp
+  actor_id VARCHAR(255),            -- Who caused this event
+  causation_id VARCHAR(255),        -- Event that caused this event
+  correlation_id VARCHAR(255),      -- For tracing related events
+  metadata JSONB,                   -- JSON (additional context)
+  inserted_at BIGINT NOT NULL,      -- Unix timestamp
   FOREIGN KEY (stream_id) REFERENCES streams(id) ON DELETE CASCADE,
   UNIQUE (stream_id, version)       -- Ensures version uniqueness per stream
 );
@@ -410,18 +410,18 @@ CREATE INDEX idx_events_actor ON events(actor_id);
 ### Snapshots Table (Optional - for performance)
 ```sql
 CREATE TABLE snapshots (
-  stream_id TEXT PRIMARY KEY,
-  snapshot_data TEXT NOT NULL,      -- JSON of full state
+  stream_id VARCHAR(255) PRIMARY KEY,
+  snapshot_data JSONB NOT NULL,     -- JSON of full state
   version INTEGER NOT NULL,         -- Event version at snapshot
-  created_at INTEGER NOT NULL,      -- Unix timestamp
+  created_at BIGINT NOT NULL,       -- Unix timestamp
   FOREIGN KEY (stream_id) REFERENCES streams(id) ON DELETE CASCADE
 );
 ```
 
 ## References
 
-- SQLite: https://www.sqlite.org/
-- Ecto SQLite3: https://hexdocs.pm/ecto_sqlite3/
+- PostgreSQL: https://www.postgresql.org/
+- Ecto: https://hexdocs.pm/ecto/
 - Claude Code SDK: https://hexdocs.pm/claude_code/readme.html
 - Phoenix LiveView: https://hexdocs.pm/phoenix_live_view/
 - Elixir Supervision: https://hexdocs.pm/elixir/Supervisor.html

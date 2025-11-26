@@ -130,6 +130,45 @@ defmodule Ipa.Pod.State do
   end
 
   @doc """
+  Reconstructs state from events without requiring a running Pod.
+
+  This is useful for viewing task state when the pod is not running.
+  Unlike `get_state/1`, this directly reads from the Event Store and
+  projects the state without caching.
+
+  ## Parameters
+
+  - `task_id` - Task UUID
+
+  ## Returns
+
+  - `{:ok, state}` - State reconstructed from events
+  - `{:error, :not_found}` - No events found for this task
+
+  ## Examples
+
+      {:ok, state} = Ipa.Pod.State.get_state_from_events("task-123")
+  """
+  @spec get_state_from_events(task_id()) :: {:ok, state()} | {:error, :not_found}
+  def get_state_from_events(task_id) do
+    case Ipa.EventStore.read_stream(task_id) do
+      {:ok, [_ | _] = events} ->
+        # Events are already decoded with atom keys by EventStore
+        state = Enum.reduce(events, nil, &apply_event/2)
+        {:ok, state}
+
+      {:ok, []} ->
+        {:error, :not_found}
+
+      {:error, :stream_not_found} ->
+        {:error, :not_found}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
   Subscribes the calling process to state change notifications.
 
   Messages received: `{:state_updated, task_id, new_state}`
@@ -589,6 +628,20 @@ defmodule Ipa.Pod.State do
     %{state | pending_transitions: [], version: version, updated_at: timestamp}
   end
 
+  # Direct phase change (used for manual phase transitions without approval workflow)
+  defp apply_event(
+         %{
+           event_type: "phase_changed",
+           data: data,
+           version: version,
+           inserted_at: timestamp
+         },
+         state
+       ) do
+    to_phase = data[:to_phase] || data["to_phase"]
+    %{state | phase: normalize_phase(to_phase), version: version, updated_at: timestamp}
+  end
+
   # Spec Phase Events
   defp apply_event(
          %{event_type: "spec_updated", data: data, version: version, inserted_at: timestamp},
@@ -788,6 +841,8 @@ defmodule Ipa.Pod.State do
     new_workstream = %{
       workstream_id: data.workstream_id,
       spec: data.spec,
+      repo: data[:repo],
+      branch: data[:branch] || "main",
       status: :pending,
       agent_id: nil,
       dependencies: data[:dependencies] || [],
@@ -838,12 +893,24 @@ defmodule Ipa.Pod.State do
          },
          state
        ) do
-    # Update workstream status
+    # Update workstream status (workspace is optional - may be set separately)
+    # First check event data, then fall back to workspaces_by_agent map populated by workspace_created event
+    workspaces_by_agent = Map.get(state, :workspaces_by_agent, %{})
+    workspace = data[:workspace] || data["workspace"] || Map.get(workspaces_by_agent, data.agent_id)
+
+    # Get existing workstream or create a minimal one if not found (defensive)
+    existing_workstream = state.workstreams[data.workstream_id] || %{
+      workstream_id: data.workstream_id,
+      status: :pending,
+      dependencies: [],
+      blocking_on: []
+    }
+
     updated_workstream =
-      state.workstreams[data.workstream_id]
+      existing_workstream
       |> Map.put(:status, :in_progress)
       |> Map.put(:agent_id, data.agent_id)
-      |> Map.put(:workspace, data.workspace)
+      |> Map.put(:workspace, workspace)
       |> Map.put(:started_at, timestamp)
 
     # Also add agent to agents list
@@ -852,7 +919,7 @@ defmodule Ipa.Pod.State do
       agent_type: "workstream_executor",
       workstream_id: data.workstream_id,
       status: :running,
-      workspace: data.workspace,
+      workspace: workspace,
       started_at: timestamp,
       completed_at: nil,
       duration_ms: nil,
@@ -1079,6 +1146,37 @@ defmodule Ipa.Pod.State do
       end)
 
     %{state | inbox: updated_inbox, version: version, updated_at: timestamp}
+  end
+
+  # Workspace created - store workspace path for agent
+  # The workspace is created before the agent_started event, so we store it
+  # in a workspaces map and merge it when the agent is created
+  defp apply_event(
+         %{event_type: "workspace_created", data: data, version: version, inserted_at: timestamp},
+         state
+       ) do
+    agent_id = data[:agent_id] || data["agent_id"]
+    workspace_path = data[:workspace_path] || data["workspace_path"]
+
+    # Store workspace path in workspaces map (keyed by agent_id)
+    workspaces = Map.get(state, :workspaces_by_agent, %{})
+    updated_workspaces = Map.put(workspaces, agent_id, workspace_path)
+
+    # Also try to update existing agent if it exists
+    updated_agents =
+      Enum.map(state.agents || [], fn agent ->
+        if agent.agent_id == agent_id do
+          Map.put(agent, :workspace, workspace_path)
+        else
+          agent
+        end
+      end)
+
+    state
+    |> Map.put(:workspaces_by_agent, updated_workspaces)
+    |> Map.put(:agents, updated_agents)
+    |> Map.put(:version, version)
+    |> Map.put(:updated_at, timestamp)
   end
 
   # Unknown event types - log and skip

@@ -119,14 +119,23 @@ defmodule Ipa.Pod do
 
   defp build_children(task_id) do
     # Start pod components in order
-    [
+    # Note: ExternalSync is optional and configured per-task
+    base_children = [
       {Ipa.Pod.State, task_id: task_id},
       {Ipa.Pod.CommunicationsManager, task_id},
       {Ipa.Pod.WorkspaceManager, task_id: task_id},
       {Ipa.Pod.Scheduler, task_id: task_id}
-      # ExternalSync not yet implemented
-      # {Ipa.Pod.ExternalSync, task_id: task_id}
     ]
+
+    # Add ExternalSync if GitHub is configured
+    github_config = Application.get_env(:ipa, :github, [])
+
+    if github_config[:repo] do
+      base_children ++
+        [{Ipa.Pod.ExternalSync, task_id: task_id, github: Map.new(github_config)}]
+    else
+      base_children
+    end
   end
 
   defp update_pod_status(task_id, status) do

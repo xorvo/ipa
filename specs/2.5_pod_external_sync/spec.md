@@ -1379,7 +1379,7 @@ config :ipa, Ipa.Pod.ExternalSync,
 
 ### Phase 3 (Advanced)
 - Bidirectional sync (external changes trigger IPA actions)
-- Multiple GitHub repos per task
+- ~~Multiple GitHub repos per task~~ **IMPLEMENTED**: Each workstream has its own `repo` and `branch` fields
 - Custom JIRA field mapping
 - Slack notifications for approvals
 - Webhook support (replace polling)

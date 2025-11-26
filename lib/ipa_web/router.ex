@@ -17,7 +17,11 @@ defmodule IpaWeb.Router do
   scope "/", IpaWeb do
     pipe_through :browser
 
-    get "/", PageController, :home
+    # Dashboard - main entry point
+    live "/", DashboardLive, :index
+
+    # Pod detail view
+    live "/pods/:task_id", Pod.TaskLive, :show
   end
 
   # Other scopes may use custom stacks.

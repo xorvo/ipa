@@ -244,6 +244,13 @@ defmodule Ipa.Pod.CommunicationsManager do
     {:noreply, %{state | messages: messages, inbox: inbox}}
   end
 
+  # Catch-all for other PubSub messages we subscribe to but don't need to handle
+  # e.g., :workspace_created from WorkspaceManager
+  @impl true
+  def handle_info(_msg, state) do
+    {:noreply, state}
+  end
+
   @impl true
   def handle_call({:post_message, opts}, _from, state) do
     with :ok <- validate_message(opts, state),

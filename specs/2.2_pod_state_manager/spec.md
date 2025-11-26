@@ -832,18 +832,20 @@ end
 ```elixir
 defp apply_event(%{
   event_type: "workstream_created",
-  data: %{workstream_id: ws_id, spec: spec, dependencies: deps},
+  data: data,  # Contains: workstream_id, spec, dependencies, repo (optional), branch (optional)
   version: version,
   inserted_at: timestamp
 }, state) do
   new_workstream = %{
-    workstream_id: ws_id,
-    spec: spec,
+    workstream_id: data.workstream_id,
+    spec: data.spec,
+    repo: data[:repo],           # GitHub repo for this workstream (e.g., "org/repo")
+    branch: data[:branch] || "main",  # Base branch for PRs
     status: :pending,
     agent_id: nil,
-    dependencies: deps,
+    dependencies: data[:dependencies] || [],
     # Defensive nil-checking to prevent crashes
-    blocking_on: Enum.filter(deps, fn dep_id ->
+    blocking_on: Enum.filter(data[:dependencies] || [], fn dep_id ->
       case Map.get(state.workstreams, dep_id) do
         nil -> true  # Dependency not created yet, treat as blocking
         dep -> dep.status != :completed
@@ -857,7 +859,7 @@ defp apply_event(%{
   }
 
   %{state |
-    workstreams: Map.put(state.workstreams, ws_id, new_workstream),
+    workstreams: Map.put(state.workstreams, data.workstream_id, new_workstream),
     version: version,
     updated_at: timestamp
   }

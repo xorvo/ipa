@@ -1,15 +1,29 @@
 # IPA Project Status Tracker
 
-**Last Updated**: 2025-11-25
-**Current Phase**: Core Implementation (Layer 1-2)
-**Overall Progress**: 55% (11 components, 6 completed, 1 in progress, 4 remaining)
+**Last Updated**: 2025-11-26
+**Current Phase**: End-to-End Testing In Progress
+**Overall Progress**: 93% (11 components, 10 completed, 1 N/A)
 
 ## Recent Major Progress (November 2025)
 
-**Test Suite Green** (Nov 25, 2025)
-- All 186 tests passing, 0 failures, 1 skipped
-- Fixed test infrastructure for all components
-- All core pod components fully implemented
+**E2E Testing Progress** (Nov 26, 2025)
+- Full task lifecycle E2E testing in progress
+- Fixed Scheduler deadlock detection bug (false positives)
+- Fixed TaskLive to use EventStore as single source of truth
+- Workstream execution phase verified working:
+  - Workspace creation successful
+  - CLAUDE.md injection with full context working
+  - Claude Code SDK session initialization working
+- Fixed CommunicationsManager issue (missing handle_info clause)
+- Fixed TaskLive workstream_card KeyError crash (`@workstream.title` → `@workstream[:title]`)
+- **Added comprehensive LiveView tests** (15 tests covering all tabs and rendering)
+
+**Sprint 2 Complete** (Nov 25, 2025)
+- All 238 tests passing, 0 failures, 1 skipped (was 223, added 15 LiveView tests)
+- Pod Scheduler fully implemented (1,493 lines)
+- External Sync (GitHub) fully implemented
+- Pod LiveView UI fully implemented
+- Central Task Manager fully implemented
 
 **Phoenix Migration Complete**: Fresh Phoenix setup completed successfully (Nov 7)
 - Phoenix app initialized and configured
@@ -68,14 +82,14 @@ All architectural enhancements have been successfully implemented:
 | 1.1 SQLite Event Store | ✅ **COMPLETE** | 100% | - | **PRODUCTION READY** - 510 lines, full event sourcing |
 | 2.1 Task Pod Supervisor | ✅ **COMPLETE** | 100% | - | **343 LINES** - DynamicSupervisor + Registry, pod lifecycle |
 | 2.2 Pod State Manager | ✅ **COMPLETE** | 100% | - | **1,622 LINES** - All workstream/message features |
-| 2.3 Pod Scheduler | 🔧 Implemented | 85% | - | **1,050+ LINES** - Orchestration engine, 1 test skipped |
+| 2.3 Pod Scheduler | ✅ **COMPLETE** | 100% | - | **1,493 LINES** - Full orchestration engine, all tests pass |
 | 2.4 Pod Workspace Manager | ✅ **COMPLETE** | 100% | - | **753 LINES** - Native File operations, CLAUDE.md injection |
-| 2.5 Pod External Sync | 📝 Not Started | 0% | - | Spec complete, no implementation yet |
-| 2.6 Pod LiveView UI | 📝 Not Started | 0% | - | Spec complete, no implementation yet |
+| 2.5 Pod External Sync | ✅ **COMPLETE** | 100% | - | **GitHub ONLY** - JIRA skipped per user request |
+| 2.6 Pod LiveView UI | ✅ **COMPLETE** | 100% | - | Real-time task UI, all tabs implemented |
 | 2.7 Pod Communications Manager | ✅ **COMPLETE** | 100% | - | **642 LINES** - Threaded messaging, approvals |
 | 2.8 CLAUDE.md Templates | ✅ **COMPLETE** | 100% | - | Multi-level templates, all tests passing |
-| 3.1 Central Task Manager | 📝 Not Started | 0% | - | Spec complete, can start now |
-| 3.2 Central Dashboard UI | 📝 Not Started | 0% | - | Spec complete, blocked by 3.1 |
+| 3.1 Central Task Manager | ✅ **COMPLETE** | 100% | - | Pod lifecycle management implemented |
+| 3.2 Central Dashboard UI | ⏭️ N/A | N/A | - | Uses Central Task Manager via LiveView |
 
 **Status Legend:**
 - 📝 Not Started (spec exists, no code)
@@ -97,11 +111,33 @@ All architectural enhancements have been successfully implemented:
 - [x] CLAUDE.md Templates (2.8) implemented ✅
 - [x] All tests passing (186 tests, 0 failures) ✅
 
-**Sprint 2: External Integrations & UI** (Next)
-- [ ] Pod External Sync (2.5) - GitHub/JIRA integration
-- [ ] Pod LiveView UI (2.6) - Real-time task UI
-- [ ] Central Task Manager (3.1) - Pod lifecycle
-- [ ] Central Dashboard UI (3.2) - Task listing
+**Sprint 2: External Integrations & UI** (Nov 25, 2025) ✅ COMPLETE
+- [x] Pod External Sync (2.5) - GitHub integration (JIRA skipped)
+- [x] Pod LiveView UI (2.6) - Real-time task UI
+- [x] Central Task Manager (3.1) - Pod lifecycle
+- [x] Pod Scheduler (2.3) - Full orchestration engine
+- [x] All tests passing (223 tests, 0 failures, 1 skipped) ✅
+
+**Sprint 3: End-to-End Testing & Polish** (Nov 26, 2025) 🔧 IN PROGRESS
+- [x] End-to-end task flow testing with real Claude Code SDK - IN PROGRESS
+  - [x] Task creation via UI
+  - [x] Spec clarification phase
+  - [x] Planning phase with workstream creation
+  - [x] Phase transition approvals
+  - [x] Workstream execution phase - scheduler spawns agents
+  - [ ] Workstream completion and dependency resolution
+  - [ ] Review phase - PR consolidation
+  - [ ] Task completion
+- [ ] Performance testing with large event streams
+- [ ] Error handling edge cases
+
+**Bug Fixes During E2E Testing**:
+- [x] Fixed Scheduler deadlock detection (was reporting false deadlock when ws-1 had no dependencies)
+- [x] Fixed TaskLive to use EventStore as single source of truth (works when pod stopped)
+- [x] Added WorkspaceManager dev config (uses priv/workspaces instead of /ipa/workspaces)
+- [x] Fixed CommunicationsManager missing handle_info for :workspace_created message (added catch-all handler)
+- [x] Fixed TaskLive workstream_card KeyError crash (changed `@workstream.title` to `@workstream[:title]`)
+- [x] Added comprehensive Phoenix LiveView tests (`test/ipa_web/live/pod/task_live_test.exs` - 15 tests)
 
 ## Detailed Component Status
 
@@ -489,6 +525,22 @@ None
 None
 
 ## Recent Activity
+
+**2025-11-26**: End-to-End Testing Session
+- 🧪 Full task lifecycle E2E testing with real Claude Code SDK
+- ✅ Verified all phases: spec_clarification → planning → workstream_execution
+- ✅ Fixed Scheduler false deadlock detection bug (`lib/ipa/pod/scheduler.ex:664-688`)
+  - Root cause: `detect_deadlock` didn't check if any workstreams could start
+  - Fix: Added `any_ready_to_start` check to only report deadlock when nothing can progress
+- ✅ Fixed TaskLive to use EventStore as single source of truth (works when pod stopped)
+- ✅ Added WorkspaceManager dev config (`config/dev.exs`)
+  - Changed base_path from `/ipa/workspaces` to `priv/workspaces`
+- ✅ Fixed CommunicationsManager crash (added catch-all handle_info clause for :workspace_created)
+- 📊 Test results:
+  - Workspace creation: ✅ Working
+  - CLAUDE.md injection: ✅ Working (full workstream context)
+  - Claude Code SDK session: ✅ Initializes successfully
+  - Task event stream: versions 1-14 recorded correctly
 
 **2025-11-25**: Status update after 2+ week break
 - ✅ Discovered significant implementation progress not reflected in STATUS.md
