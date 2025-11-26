@@ -1179,6 +1179,78 @@ defmodule Ipa.Pod.State do
     |> Map.put(:updated_at, timestamp)
   end
 
+  # Workstream started - mark workstream as in_progress
+  defp apply_event(
+         %{event_type: "workstream_started", event_data: data, version: version, inserted_at: timestamp},
+         state
+       ) do
+    workstream_id = data["workstream_id"] || data[:workstream_id]
+
+    updated_workstreams =
+      Map.update(state.workstreams, workstream_id, %{status: :in_progress}, fn ws ->
+        Map.put(ws, :status, :in_progress)
+      end)
+
+    %{state | workstreams: updated_workstreams, version: version, updated_at: timestamp}
+  end
+
+  # Agent spawned - track agent assignment
+  defp apply_event(
+         %{event_type: "agent_spawned", event_data: data, version: version, inserted_at: timestamp},
+         state
+       ) do
+    agent_id = data["agent_id"] || data[:agent_id]
+    workstream_id = data["workstream_id"] || data[:workstream_id]
+
+    agent = %{
+      agent_id: agent_id,
+      workstream_id: workstream_id,
+      status: :running,
+      spawned_at: data["spawned_at"] || data[:spawned_at] || timestamp
+    }
+
+    updated_agents = [agent | state.agents]
+    %{state | agents: updated_agents, version: version, updated_at: timestamp}
+  end
+
+  # PR created - track PR in external sync
+  defp apply_event(
+         %{event_type: "pr_created", event_data: data, version: version, inserted_at: timestamp},
+         state
+       ) do
+    pr_url = data["pr_url"] || data[:pr_url]
+    pr_number = data["pr_number"] || data[:pr_number]
+
+    new_github = %{
+      pr_number: pr_number,
+      pr_url: pr_url,
+      pr_merged?: false,
+      synced_at: timestamp
+    }
+
+    updated_external_sync = Map.put(state.external_sync, :github, new_github)
+    %{state | external_sync: updated_external_sync, version: version, updated_at: timestamp}
+  end
+
+  # PR approved - update approval status
+  defp apply_event(
+         %{event_type: "pr_approved", event_data: _data, version: version, inserted_at: timestamp},
+         state
+       ) do
+    # Just update timestamp - approval tracked via events
+    %{state | version: version, updated_at: timestamp}
+  end
+
+  # PR merged - mark PR as merged
+  defp apply_event(
+         %{event_type: "pr_merged", event_data: _data, version: version, inserted_at: timestamp},
+         state
+       ) do
+    new_github = Map.put(state.external_sync.github, :pr_merged?, true)
+    updated_external_sync = Map.put(state.external_sync, :github, new_github)
+    %{state | external_sync: updated_external_sync, version: version, updated_at: timestamp}
+  end
+
   # Unknown event types - log and skip
   defp apply_event(%{event_type: event_type, version: version, inserted_at: timestamp}, state) do
     Logger.warning("Unknown event type: #{event_type}, skipping")
