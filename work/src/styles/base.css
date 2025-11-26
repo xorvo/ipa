@@ -1,0 +1,212 @@
+/**
+ * Base Styles
+ * Core application styles and layout
+ */
+
+/* === Body & Root === */
+body {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-primary);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* === Background Effects Layer === */
+.background-effects {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-background);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* Grid overlay - subtle cyberpunk grid pattern */
+.grid-overlay {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(0, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 50px 50px;
+  animation: grid-move 20s linear infinite;
+}
+
+@keyframes grid-move {
+  0% {
+    transform: translate(0, 0);
+  }
+  100% {
+    transform: translate(50px, 50px);
+  }
+}
+
+/* Scanlines effect - CRT monitor aesthetic */
+.scanlines {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.1) 2px,
+    rgba(0, 0, 0, 0.1) 4px
+  );
+  opacity: 0.3;
+}
+
+/* === App Container === */
+.app {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-lg);
+}
+
+/* === Clock Container === */
+.clock-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-lg);
+  text-align: center;
+}
+
+/* === Clock Display === */
+.clock-display {
+  position: relative;
+}
+
+.time-wrapper {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: var(--space-xs);
+}
+
+.time-digit {
+  font-family: var(--font-display);
+  font-size: var(--font-size-clock);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+  text-shadow: var(--text-glow);
+  letter-spacing: 0.05em;
+  min-width: 2ch;
+  text-align: center;
+  transition: color var(--transition-base);
+}
+
+.time-separator {
+  font-family: var(--font-display);
+  font-size: var(--font-size-clock);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+  text-shadow: var(--text-glow);
+  opacity: 1;
+  animation: blink 1s steps(1) infinite;
+}
+
+@keyframes blink {
+  0%, 50% {
+    opacity: 1;
+  }
+  51%, 100% {
+    opacity: 0.3;
+  }
+}
+
+.ampm-indicator {
+  font-family: var(--font-display);
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-secondary);
+  text-shadow: var(--text-glow);
+  margin-left: var(--space-md);
+  text-transform: uppercase;
+}
+
+/* === Date Display === */
+.date-display {
+  margin-top: var(--space-md);
+}
+
+.date-text {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xl);
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+}
+
+/* === Settings Panel === */
+.settings-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: min(350px, 90vw);
+  height: 100vh;
+  background: var(--color-bg-secondary);
+  border-left: 1px solid var(--color-primary-dim);
+  box-shadow:
+    -5px 0 20px rgba(0, 0, 0, 0.5),
+    -2px 0 10px var(--color-primary-dim);
+  transform: translateX(100%);
+  transition: transform var(--transition-base);
+  z-index: var(--z-overlay);
+  padding: var(--space-xl);
+  overflow-y: auto;
+}
+
+.settings-panel[aria-hidden="false"] {
+  transform: translateX(0);
+}
+
+/* === Settings Toggle Button === */
+.settings-toggle {
+  position: fixed;
+  top: var(--space-lg);
+  right: var(--space-lg);
+  width: 50px;
+  height: 50px;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-primary-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-elevated);
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.settings-toggle:hover {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-neon);
+}
+
+.settings-toggle:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.settings-icon {
+  font-size: var(--font-size-xl);
+  color: var(--color-primary);
+  transition: transform var(--transition-base);
+}
+
+.settings-toggle:hover .settings-icon {
+  transform: rotate(90deg);
+}
+
+/* === Audio Container (hidden) === */
+#audio-container {
+  display: none;
+}

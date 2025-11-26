@@ -1,0 +1,133 @@
+/**
+ * CSS Custom Properties (Variables)
+ * Cyberpunk color palette and design tokens
+ */
+
+:root {
+  /* === Color Palette === */
+
+  /* Primary Neon Colors */
+  --color-cyan: #00ffff;
+  --color-cyan-bright: #40ffff;
+  --color-cyan-dim: #00b3b3;
+
+  --color-magenta: #ff00ff;
+  --color-magenta-bright: #ff40ff;
+  --color-magenta-dim: #b300b3;
+
+  --color-pink: #ff0080;
+  --color-pink-bright: #ff40a0;
+  --color-pink-dim: #b30059;
+
+  --color-blue: #0080ff;
+  --color-blue-bright: #40a0ff;
+  --color-blue-dim: #0059b3;
+
+  --color-yellow: #ffff00;
+  --color-yellow-bright: #ffff40;
+  --color-yellow-dim: #b3b300;
+
+  /* Background Colors */
+  --color-bg-primary: #0a0a0f;
+  --color-bg-secondary: #12121a;
+  --color-bg-tertiary: #1a1a24;
+  --color-bg-elevated: #22222e;
+
+  /* Text Colors */
+  --color-text-primary: #e0e0e0;
+  --color-text-secondary: #a0a0a0;
+  --color-text-muted: #606060;
+
+  /* Active theme color (can be changed dynamically) */
+  --color-primary: var(--color-cyan);
+  --color-primary-bright: var(--color-cyan-bright);
+  --color-primary-dim: var(--color-cyan-dim);
+
+  --color-secondary: var(--color-pink);
+  --color-secondary-bright: var(--color-pink-bright);
+  --color-secondary-dim: var(--color-pink-dim);
+
+  /* === Typography === */
+  --font-display: 'Orbitron', sans-serif;
+  --font-mono: 'Share Tech Mono', monospace;
+  --font-system: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+
+  /* Font Sizes - Using clamp for responsive sizing */
+  --font-size-xs: clamp(0.625rem, 0.5rem + 0.5vw, 0.75rem);
+  --font-size-sm: clamp(0.75rem, 0.625rem + 0.5vw, 0.875rem);
+  --font-size-base: clamp(0.875rem, 0.75rem + 0.5vw, 1rem);
+  --font-size-lg: clamp(1rem, 0.875rem + 0.5vw, 1.125rem);
+  --font-size-xl: clamp(1.25rem, 1rem + 1vw, 1.5rem);
+  --font-size-2xl: clamp(1.5rem, 1.25rem + 1vw, 2rem);
+  --font-size-3xl: clamp(2rem, 1.5rem + 2vw, 3rem);
+  --font-size-clock: clamp(3rem, 2.5rem + 8vw, 10rem);
+
+  /* Font Weights */
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --font-weight-black: 900;
+
+  /* === Spacing === */
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --space-2xl: 3rem;
+  --space-3xl: 4rem;
+
+  /* === Effects === */
+
+  /* Glow intensities */
+  --glow-sm: 0 0 5px;
+  --glow-md: 0 0 10px;
+  --glow-lg: 0 0 20px;
+  --glow-xl: 0 0 40px;
+
+  /* Neon text shadow (uses current color) */
+  --text-glow:
+    0 0 5px currentColor,
+    0 0 10px currentColor,
+    0 0 20px currentColor,
+    0 0 40px currentColor;
+
+  --text-glow-intense:
+    0 0 5px currentColor,
+    0 0 10px currentColor,
+    0 0 20px currentColor,
+    0 0 40px currentColor,
+    0 0 80px currentColor;
+
+  /* Box shadows */
+  --shadow-neon:
+    0 0 5px var(--color-primary),
+    0 0 10px var(--color-primary),
+    0 0 20px var(--color-primary);
+
+  /* Border radius */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 1rem;
+  --radius-full: 9999px;
+
+  /* === Transitions === */
+  --transition-fast: 150ms ease;
+  --transition-base: 250ms ease;
+  --transition-slow: 400ms ease;
+
+  /* === Z-Index Layers === */
+  --z-background: -10;
+  --z-base: 0;
+  --z-elevated: 10;
+  --z-overlay: 100;
+  --z-modal: 1000;
+}
+
+/* Dark mode adjustments (default is already dark) */
+@media (prefers-color-scheme: light) {
+  :root {
+    /* Keep dark theme regardless of system preference for cyberpunk aesthetic */
+  }
+}

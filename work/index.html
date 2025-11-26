@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="A cyberpunk-themed digital clock with neon glow effects">
+  <meta name="theme-color" content="#0a0a0f">
+
+  <!-- Open Graph / Social -->
+  <meta property="og:title" content="Cyberpunk Clock">
+  <meta property="og:description" content="A cyberpunk-themed digital clock with neon glow effects">
+  <meta property="og:type" content="website">
+
+  <!-- Preconnect for fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+  <!-- Cyberpunk fonts: Orbitron for display, Share Tech Mono for secondary -->
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+
+  <title>Cyberpunk Clock</title>
+  <link rel="stylesheet" href="/src/styles/main.css">
+</head>
+<body>
+  <!-- Background effects layer -->
+  <div id="background-effects" class="background-effects">
+    <div class="grid-overlay"></div>
+    <div class="scanlines"></div>
+  </div>
+
+  <!-- Main application container -->
+  <div id="app" class="app">
+    <!-- Clock container - centered on screen -->
+    <main class="clock-container">
+      <!-- Time display -->
+      <div class="clock-display">
+        <div class="time-wrapper">
+          <span id="hours" class="time-digit">00</span>
+          <span class="time-separator">:</span>
+          <span id="minutes" class="time-digit">00</span>
+          <span class="time-separator">:</span>
+          <span id="seconds" class="time-digit">00</span>
+          <span id="ampm" class="ampm-indicator"></span>
+        </div>
+      </div>
+
+      <!-- Date display -->
+      <div class="date-display">
+        <span id="date" class="date-text">Loading...</span>
+      </div>
+    </main>
+
+    <!-- Settings panel (will be implemented in ws-6) -->
+    <aside id="settings-panel" class="settings-panel" aria-hidden="true">
+      <!-- Settings content will be added by ws-6 -->
+    </aside>
+
+    <!-- Settings toggle button -->
+    <button id="settings-toggle" class="settings-toggle" aria-label="Toggle settings">
+      <span class="settings-icon">&#9881;</span>
+    </button>
+  </div>
+
+  <!-- Audio container for sound effects (will be implemented in ws-5) -->
+  <div id="audio-container" aria-hidden="true"></div>
+
+  <!-- Main JavaScript entry point -->
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
