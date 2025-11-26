@@ -12,8 +12,13 @@
 /* Base styles and layout */
 @import './base.css';
 
+/* Cyberpunk visual effects (ws-3) */
+@import './effects.css';
+
+/* Audio controls (ws-5: Sound effects) */
+@import './audio.css';
+
 /* Additional component styles will be added by other workstreams:
- * - effects.css (ws-3: Cyberpunk visual design)
  * - animations.css (ws-4: Neon glow animations)
  * - settings.css (ws-6: Settings panel)
  * - responsive.css (ws-7: Responsive design)

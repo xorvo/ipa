@@ -10,22 +10,57 @@
   --color-cyan: #00ffff;
   --color-cyan-bright: #40ffff;
   --color-cyan-dim: #00b3b3;
+  --color-cyan-glow: rgba(0, 255, 255, 0.6);
 
   --color-magenta: #ff00ff;
   --color-magenta-bright: #ff40ff;
   --color-magenta-dim: #b300b3;
+  --color-magenta-glow: rgba(255, 0, 255, 0.6);
 
   --color-pink: #ff0080;
   --color-pink-bright: #ff40a0;
   --color-pink-dim: #b30059;
+  --color-pink-glow: rgba(255, 0, 128, 0.6);
 
   --color-blue: #0080ff;
   --color-blue-bright: #40a0ff;
   --color-blue-dim: #0059b3;
+  --color-blue-glow: rgba(0, 128, 255, 0.6);
+
+  /* Electric Blue - vibrant cyberpunk accent */
+  --color-electric-blue: #00d4ff;
+  --color-electric-blue-bright: #4de4ff;
+  --color-electric-blue-dim: #00a3c4;
+  --color-electric-blue-glow: rgba(0, 212, 255, 0.6);
+
+  /* Hot Pink - intense neon accent */
+  --color-hot-pink: #ff1493;
+  --color-hot-pink-bright: #ff69b4;
+  --color-hot-pink-dim: #c71585;
+  --color-hot-pink-glow: rgba(255, 20, 147, 0.6);
+
+  /* Neon Green - matrix style */
+  --color-neon-green: #39ff14;
+  --color-neon-green-bright: #66ff47;
+  --color-neon-green-dim: #2eb810;
+  --color-neon-green-glow: rgba(57, 255, 20, 0.6);
+
+  /* Neon Orange - warning accent */
+  --color-neon-orange: #ff6600;
+  --color-neon-orange-bright: #ff8533;
+  --color-neon-orange-dim: #cc5200;
+  --color-neon-orange-glow: rgba(255, 102, 0, 0.6);
+
+  /* Purple - deep neon */
+  --color-neon-purple: #9d00ff;
+  --color-neon-purple-bright: #b94fff;
+  --color-neon-purple-dim: #7700c4;
+  --color-neon-purple-glow: rgba(157, 0, 255, 0.6);
 
   --color-yellow: #ffff00;
   --color-yellow-bright: #ffff40;
   --color-yellow-dim: #b3b300;
+  --color-yellow-glow: rgba(255, 255, 0, 0.6);
 
   /* Background Colors */
   --color-bg-primary: #0a0a0f;
@@ -85,6 +120,8 @@
   --glow-md: 0 0 10px;
   --glow-lg: 0 0 20px;
   --glow-xl: 0 0 40px;
+  --glow-2xl: 0 0 60px;
+  --glow-3xl: 0 0 80px;
 
   /* Neon text shadow (uses current color) */
   --text-glow:
@@ -100,11 +137,70 @@
     0 0 40px currentColor,
     0 0 80px currentColor;
 
+  /* Subtle text glow for less prominent elements */
+  --text-glow-subtle:
+    0 0 2px currentColor,
+    0 0 5px currentColor,
+    0 0 10px currentColor;
+
+  /* Flickering glow effect layers */
+  --text-glow-flicker:
+    0 0 5px currentColor,
+    0 0 10px currentColor,
+    0 0 15px currentColor,
+    0 0 20px currentColor,
+    0 0 30px currentColor,
+    0 0 40px currentColor;
+
+  /* Multi-color glow for special effects */
+  --text-glow-multi:
+    0 0 5px var(--color-cyan),
+    0 0 10px var(--color-cyan),
+    0 0 20px var(--color-magenta),
+    0 0 40px var(--color-magenta);
+
   /* Box shadows */
   --shadow-neon:
     0 0 5px var(--color-primary),
     0 0 10px var(--color-primary),
     0 0 20px var(--color-primary);
+
+  --shadow-neon-intense:
+    0 0 5px var(--color-primary),
+    0 0 10px var(--color-primary),
+    0 0 20px var(--color-primary),
+    0 0 40px var(--color-primary),
+    inset 0 0 10px var(--color-primary-glow);
+
+  --shadow-neon-secondary:
+    0 0 5px var(--color-secondary),
+    0 0 10px var(--color-secondary),
+    0 0 20px var(--color-secondary);
+
+  /* Border glow effects */
+  --border-glow:
+    0 0 1px var(--color-primary),
+    0 0 2px var(--color-primary),
+    0 0 5px var(--color-primary-dim);
+
+  /* CRT screen glow effect */
+  --crt-glow:
+    inset 0 0 50px rgba(0, 255, 255, 0.03),
+    inset 0 0 100px rgba(0, 255, 255, 0.02);
+
+  /* Circuit pattern color */
+  --circuit-color: rgba(0, 255, 255, 0.08);
+  --circuit-color-bright: rgba(0, 255, 255, 0.15);
+  --grid-color: rgba(0, 255, 255, 0.03);
+  --grid-color-bright: rgba(0, 255, 255, 0.06);
+
+  /* Scanline colors */
+  --scanline-color: rgba(0, 0, 0, 0.1);
+  --scanline-color-bright: rgba(0, 0, 0, 0.15);
+
+  /* Primary glow color (for JavaScript access) */
+  --color-primary-glow: var(--color-cyan-glow);
+  --color-secondary-glow: var(--color-pink-glow);
 
   /* Border radius */
   --radius-sm: 0.25rem;

@@ -22,15 +22,101 @@ body {
   overflow: hidden;
 }
 
-/* Grid overlay - subtle cyberpunk grid pattern */
+/* Dark gradient background with depth and ambient glow */
+.background-effects::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    /* Radial glow from center - subtle neon ambient */
+    radial-gradient(
+      ellipse 80% 50% at 50% 50%,
+      rgba(0, 255, 255, 0.03) 0%,
+      transparent 50%
+    ),
+    /* Corner accent glows - pink/magenta top-left */
+    radial-gradient(
+      ellipse at 0% 0%,
+      rgba(255, 0, 128, 0.05) 0%,
+      transparent 40%
+    ),
+    /* Corner accent glows - blue bottom-right */
+    radial-gradient(
+      ellipse at 100% 100%,
+      rgba(0, 128, 255, 0.05) 0%,
+      transparent 40%
+    ),
+    /* Base dark gradient */
+    linear-gradient(
+      180deg,
+      var(--color-bg-primary) 0%,
+      var(--color-bg-secondary) 50%,
+      var(--color-bg-primary) 100%
+    );
+}
+
+/* Grid overlay - cyberpunk circuit-inspired grid */
 .grid-overlay {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(0, 255, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 255, 255, 0.03) 1px, transparent 1px);
-  background-size: 50px 50px;
-  animation: grid-move 20s linear infinite;
+    /* Primary horizontal grid lines */
+    linear-gradient(var(--grid-color) 1px, transparent 1px),
+    /* Primary vertical grid lines */
+    linear-gradient(90deg, var(--grid-color) 1px, transparent 1px),
+    /* Circuit node dots */
+    radial-gradient(
+      circle at center,
+      var(--circuit-color) 1px,
+      transparent 1px
+    );
+  background-size: 50px 50px, 50px 50px, 100px 100px;
+  background-position: 0 0, 0 0, 25px 25px;
+  animation: grid-move 30s linear infinite;
+}
+
+/* Secondary larger grid layer for depth */
+.grid-overlay::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--grid-color-bright) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-color-bright) 1px, transparent 1px);
+  background-size: 200px 200px;
+  animation: grid-move 60s linear infinite reverse;
+  opacity: 0.5;
+}
+
+/* Circuit trace pattern overlay */
+.grid-overlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    /* Horizontal circuit traces */
+    linear-gradient(
+      90deg,
+      transparent 0%,
+      transparent 45%,
+      var(--circuit-color) 45%,
+      var(--circuit-color) 55%,
+      transparent 55%,
+      transparent 100%
+    ),
+    /* Vertical circuit traces */
+    linear-gradient(
+      0deg,
+      transparent 0%,
+      transparent 45%,
+      var(--circuit-color) 45%,
+      var(--circuit-color) 55%,
+      transparent 55%,
+      transparent 100%
+    );
+  background-size: 200px 200px;
+  background-position: 50px 50px;
+  opacity: 0.3;
 }
 
 @keyframes grid-move {
@@ -42,7 +128,7 @@ body {
   }
 }
 
-/* Scanlines effect - CRT monitor aesthetic */
+/* Scanlines effect - Enhanced CRT monitor aesthetic */
 .scanlines {
   position: absolute;
   inset: 0;
@@ -50,10 +136,66 @@ body {
     0deg,
     transparent,
     transparent 2px,
-    rgba(0, 0, 0, 0.1) 2px,
-    rgba(0, 0, 0, 0.1) 4px
+    var(--scanline-color) 2px,
+    var(--scanline-color) 4px
   );
-  opacity: 0.3;
+  opacity: 0.35;
+  animation: scanline-scroll 10s linear infinite;
+}
+
+/* Moving scanline bar - simulates CRT refresh */
+.scanlines::before {
+  content: '';
+  position: absolute;
+  width: 100%;
+  height: 5%;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(0, 255, 255, 0.03) 50%,
+    transparent 100%
+  );
+  animation: scanline-bar 6s linear infinite;
+}
+
+/* CRT vignette effect - darkened corners */
+.scanlines::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 0%,
+    transparent 60%,
+    rgba(0, 0, 0, 0.3) 100%
+  );
+  pointer-events: none;
+}
+
+@keyframes scanline-scroll {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 0 8px;
+  }
+}
+
+@keyframes scanline-bar {
+  0% {
+    top: -5%;
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.8;
+  }
+  90% {
+    opacity: 0.8;
+  }
+  100% {
+    top: 105%;
+    opacity: 0;
+  }
 }
 
 /* === App Container === */
@@ -140,6 +282,27 @@ body {
   color: var(--color-text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.2em;
+  text-shadow: var(--text-glow-subtle);
+}
+
+/* CRT screen subtle flicker - applies to entire display */
+.app {
+  animation: crt-ambient 8s infinite;
+}
+
+@keyframes crt-ambient {
+  0%, 100% {
+    opacity: 1;
+  }
+  3% {
+    opacity: 0.98;
+  }
+  6% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.99;
+  }
 }
 
 /* === Settings Panel === */
@@ -204,6 +367,34 @@ body {
 
 .settings-toggle:hover .settings-icon {
   transform: rotate(90deg);
+}
+
+/* === Digit Update Animation === */
+.digit-updated {
+  animation: digit-pulse 0.2s ease-out;
+}
+
+@keyframes digit-pulse {
+  0% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  50% {
+    transform: scale(1.05);
+    filter: brightness(1.3);
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+
+/* Ensure smooth text rendering for clock digits */
+.time-digit,
+.time-separator {
+  will-change: contents;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* === Audio Container (hidden) === */
