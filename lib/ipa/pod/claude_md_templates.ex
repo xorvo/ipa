@@ -25,7 +25,7 @@ defmodule Ipa.Pod.ClaudeMdTemplates do
 
   ## Dependencies
 
-  - Ipa.Pod.State - To query task and workstream state
+  - Ipa.Pod.Manager - To query task and workstream state
   - EEx - For template rendering
 
   ## Configuration
@@ -124,7 +124,7 @@ defmodule Ipa.Pod.ClaudeMdTemplates do
   """
   @spec generate_pod_level(task_id(), keyword()) :: {:ok, content()} | {:error, term()}
   def generate_pod_level(task_id, opts \\ []) do
-    with {:ok, task_state} <- Ipa.Pod.State.get_state(task_id),
+    with {:ok, task_state} <- Ipa.Pod.Manager.get_state(task_id),
          {:ok, template} <- load_template(@pod_template) do
       # Build context from task state and opts
       context = build_pod_context(task_state, opts)
@@ -179,7 +179,7 @@ defmodule Ipa.Pod.ClaudeMdTemplates do
   @spec generate_workstream_level(task_id(), workstream_id(), keyword()) ::
           {:ok, content()} | {:error, term()}
   def generate_workstream_level(task_id, workstream_id, opts \\ []) do
-    with {:ok, task_state} <- Ipa.Pod.State.get_state(task_id),
+    with {:ok, task_state} <- Ipa.Pod.Manager.get_state(task_id),
          {:ok, workstream} <- get_workstream_from_state(task_state, workstream_id),
          {:ok, template} <- load_template(@workstream_template) do
       # Build context from task state, workstream, and opts

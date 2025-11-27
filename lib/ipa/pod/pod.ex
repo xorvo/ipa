@@ -101,8 +101,6 @@ defmodule Ipa.Pod do
     max_seconds = Keyword.get(config, :max_seconds, 5)
 
     # Define children
-    # NOTE: These are placeholders until the actual components are implemented
-    # Real children will be: Pod.State, Pod.Scheduler, Pod.WorkspaceManager, Pod.ExternalSync
     children = build_children(task_id)
 
     # Update status to active after init
@@ -119,12 +117,11 @@ defmodule Ipa.Pod do
 
   defp build_children(task_id) do
     # Start pod components in order
-    # Note: ExternalSync is optional and configured per-task
+    # Agent Supervisor must start before Manager (Manager spawns agents via it)
     base_children = [
-      {Ipa.Pod.State, task_id: task_id},
-      {Ipa.Pod.CommunicationsManager, task_id},
+      {Ipa.Agent.Supervisor, task_id: task_id},
       {Ipa.Pod.WorkspaceManager, task_id: task_id},
-      {Ipa.Pod.Scheduler, task_id: task_id}
+      {Ipa.Pod.Manager, task_id: task_id}
     ]
 
     # Add ExternalSync if GitHub is configured

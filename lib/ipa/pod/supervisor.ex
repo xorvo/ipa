@@ -36,10 +36,13 @@ defmodule Ipa.PodSupervisor do
       {:error, :stream_not_found}
   """
   def start_pod(task_id) when is_binary(task_id) do
-    # Check if pod is already running
+    # Check if pod is already running (includes Process.alive? check)
     if pod_running?(task_id) do
       {:error, :already_started}
     else
+      # Clean up any stale registry entry from a dead process
+      cleanup_stale_registry_entry(task_id)
+
       # Verify stream exists in Event Store
       case verify_stream_exists(task_id) do
         :ok ->
@@ -210,6 +213,10 @@ defmodule Ipa.PodSupervisor do
   @doc """
   Checks if a pod is currently running.
 
+  This function checks both that the pod is registered AND that the process is alive.
+  This handles cases where the registry entry may be stale (e.g., pod crashed but
+  registry cleanup hasn't completed yet).
+
   ## Parameters
     - `task_id` - Unique identifier for the task
 
@@ -224,8 +231,13 @@ defmodule Ipa.PodSupervisor do
   """
   def pod_running?(task_id) when is_binary(task_id) do
     case get_pod_pid(task_id) do
-      {:ok, _pid} -> true
-      {:error, :not_found} -> false
+      {:ok, pid} ->
+        # Verify the process is actually alive
+        # This handles stale registry entries after crashes
+        Process.alive?(pid)
+
+      {:error, :not_found} ->
+        false
     end
   end
 
@@ -303,6 +315,7 @@ defmodule Ipa.PodSupervisor do
   end
 
   defp verify_stream_exists(task_id) do
+    # Let DB errors crash - they indicate a real problem that needs attention
     case Ipa.EventStore.stream_exists?(task_id) do
       true ->
         :ok
@@ -311,10 +324,25 @@ defmodule Ipa.PodSupervisor do
         Logger.warning("Cannot start pod #{task_id}: stream not found in Event Store")
         {:error, :stream_not_found}
     end
-  rescue
-    error ->
-      Logger.error("Error verifying stream existence for #{task_id}: #{inspect(error)}")
-      {:error, :event_store_error}
+  end
+
+  # Clean up stale registry entries where the process is dead
+  # This can happen if a pod crashes and the registry cleanup hasn't completed
+  defp cleanup_stale_registry_entry(task_id) do
+    case Ipa.PodRegistry.lookup(task_id) do
+      {:ok, pid, _metadata} ->
+        unless Process.alive?(pid) do
+          Logger.info("Cleaning up stale registry entry for pod #{task_id} (dead process: #{inspect(pid)})")
+          # The Registry should clean up automatically when the process dies,
+          # but we can help by unregistering explicitly
+          Ipa.PodRegistry.unregister(task_id)
+          # Give a small delay for registry cleanup
+          Process.sleep(50)
+        end
+
+      {:error, :not_found} ->
+        :ok
+    end
   end
 
 

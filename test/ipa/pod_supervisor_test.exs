@@ -11,7 +11,7 @@ defmodule Ipa.PodSupervisorTest do
     task_id = "test-#{System.system_time(:millisecond)}-#{:rand.uniform(1_000_000_000)}"
     {:ok, ^task_id} = EventStore.start_stream("task", task_id)
 
-    # Append initial task_created event (required by Pod.State)
+    # Append initial task_created event (required by Pod.Manager)
     {:ok, _} = EventStore.append(task_id, "task_created", %{title: "Test Task"}, actor_id: "system")
 
     # Ensure pod is stopped after each test
@@ -312,7 +312,7 @@ defmodule Ipa.PodSupervisorTest do
       {:ok, task_id1} = EventStore.start_stream("task", task_id1)
       {:ok, task_id2} = EventStore.start_stream("task", task_id2)
 
-      # Append task_created events (required by Pod.State)
+      # Append task_created events (required by Pod.Manager)
       {:ok, _} = EventStore.append(task_id1, "task_created", %{title: "Test 1"}, actor_id: "system")
       {:ok, _} = EventStore.append(task_id2, "task_created", %{title: "Test 2"}, actor_id: "system")
 

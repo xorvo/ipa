@@ -2,7 +2,8 @@ defmodule Ipa.Pod.ClaudeMdTemplatesTest do
   use Ipa.DataCase, async: false
 
   alias Ipa.Pod.ClaudeMdTemplates
-  alias Ipa.{EventStore, Pod}
+  alias Ipa.Pod.Manager
+  alias Ipa.EventStore
 
   setup do
     # Generate unique task ID for each test
@@ -24,13 +25,13 @@ defmodule Ipa.Pod.ClaudeMdTemplatesTest do
         actor_id: "user-123"
       )
 
-    # Start Pod State Manager to make state queryable
-    {:ok, _state_pid} = Pod.State.start_link(task_id: task_id)
+    # Start Pod Manager to make state queryable
+    {:ok, _state_pid} = Manager.start_link(task_id: task_id)
 
     # Clean up after test
     on_exit(fn ->
-      # Stop state manager (defensive - check if process is alive)
-      case Registry.lookup(Ipa.PodRegistry, {:pod_state, task_id}) do
+      # Stop manager (defensive - check if process is alive)
+      case Registry.lookup(Ipa.PodRegistry, {:manager, task_id}) do
         [] ->
           :ok
 
@@ -128,8 +129,9 @@ defmodule Ipa.Pod.ClaudeMdTemplatesTest do
           actor_id: "scheduler"
         )
 
-      # Reload state to pick up workstreams
-      Pod.State.reload_state(task_id)
+      # Restart manager to pick up new events
+      stop_manager(task_id)
+      {:ok, _} = Manager.start_link(task_id: task_id)
 
       {:ok, content} = ClaudeMdTemplates.generate_pod_level(task_id)
 
@@ -205,8 +207,9 @@ defmodule Ipa.Pod.ClaudeMdTemplatesTest do
           actor_id: "scheduler"
         )
 
-      # Reload state
-      Pod.State.reload_state(task_id)
+      # Restart manager to pick up new events
+      stop_manager(task_id)
+      {:ok, _} = Manager.start_link(task_id: task_id)
 
       :ok
     end
@@ -299,8 +302,6 @@ defmodule Ipa.Pod.ClaudeMdTemplatesTest do
           actor_id: "user-123"
         )
 
-      {:ok, _state_pid} = Pod.State.start_link(task_id: task_id)
-
       {:ok, _} =
         EventStore.append(
           task_id,
@@ -315,7 +316,8 @@ defmodule Ipa.Pod.ClaudeMdTemplatesTest do
           actor_id: "scheduler"
         )
 
-      Pod.State.reload_state(task_id)
+      # Start manager after all events are appended
+      {:ok, _state_pid} = Manager.start_link(task_id: task_id)
 
       {:ok, content} = ClaudeMdTemplates.generate_workstream_level(task_id, "ws-only")
 
@@ -324,10 +326,7 @@ defmodule Ipa.Pod.ClaudeMdTemplatesTest do
       refute content =~ "Related Workstreams"
 
       # Cleanup (defensive)
-      case Registry.lookup(Ipa.PodRegistry, {:pod_state, task_id}) do
-        [] -> :ok
-        [{pid, _}] -> if Process.alive?(pid), do: GenServer.stop(pid, :normal, 100)
-      end
+      stop_manager(task_id)
     end
 
     test "escapes special characters in template variables", %{task_id: task_id} do
@@ -346,7 +345,9 @@ defmodule Ipa.Pod.ClaudeMdTemplatesTest do
           actor_id: "scheduler"
         )
 
-      Pod.State.reload_state(task_id)
+      # Restart manager to pick up new events
+      stop_manager(task_id)
+      {:ok, _} = Manager.start_link(task_id: task_id)
 
       # Should not crash on special characters
       {:ok, content} = ClaudeMdTemplates.generate_workstream_level(task_id, "ws-special")
@@ -376,20 +377,25 @@ defmodule Ipa.Pod.ClaudeMdTemplatesTest do
           actor_id: "user-123"
         )
 
-      {:ok, _state_pid} = Pod.State.start_link(task_id: task_id)
+      {:ok, _state_pid} = Manager.start_link(task_id: task_id)
 
       {:ok, content} = ClaudeMdTemplates.generate_pod_level(task_id)
 
       assert content =~ "git@github.com:test/test.git"
 
       # Cleanup (defensive)
-      case Registry.lookup(Ipa.PodRegistry, {:pod_state, task_id}) do
-        [] -> :ok
-        [{pid, _}] -> if Process.alive?(pid), do: GenServer.stop(pid, :normal, 100)
-      end
+      stop_manager(task_id)
 
       # Reset config
       Application.put_env(:ipa, :repo_url, "git@github.com:xorvo/ipa.git")
+    end
+  end
+
+  # Helper to stop manager by task_id
+  defp stop_manager(task_id) do
+    case Registry.lookup(Ipa.PodRegistry, {:manager, task_id}) do
+      [] -> :ok
+      [{pid, _}] -> if Process.alive?(pid), do: GenServer.stop(pid, :normal, 100)
     end
   end
 end

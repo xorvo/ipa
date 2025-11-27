@@ -14,9 +14,15 @@ defmodule Ipa.EventStore do
   - Event ordering (single version sequence)
   - State replay (one stream to read)
   - Concurrency control (one version to check)
+
+  ## PubSub Integration
+
+  The EventStore broadcasts all event appends to enable real-time UI updates.
+  Subscribe to `"events:<stream_id>"` to receive `{:event_appended, stream_id, event}` messages.
   """
 
   import Ecto.Query
+  require Logger
   alias Ipa.Repo
   alias Ipa.EventStore.{Stream, Event, Snapshot}
   alias UUID
@@ -161,10 +167,11 @@ defmodule Ipa.EventStore do
 
       # Insert event
       case %Event{} |> Event.changeset(event_attrs) |> Repo.insert() do
-        {:ok, _event} ->
+        {:ok, inserted_event} ->
           # Update stream timestamp
           update_stream_timestamp(stream_id, now)
-          new_version
+          # Return both version and decoded event for broadcasting
+          {new_version, decode_event(inserted_event)}
 
         {:error, %Ecto.Changeset{errors: errors}} ->
           case Keyword.get(errors, :version) do
@@ -184,8 +191,13 @@ defmodule Ipa.EventStore do
       end
     end)
     |> case do
-      {:ok, version} -> {:ok, version}
-      {:error, reason} -> {:error, reason}
+      {:ok, {version, event}} ->
+        # Broadcast the event for real-time updates
+        broadcast_event_appended(stream_id, event)
+        {:ok, version}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -241,9 +253,9 @@ defmodule Ipa.EventStore do
       global_correlation_id = Keyword.get(opts, :correlation_id)
       global_actor_id = Keyword.get(opts, :actor_id)
 
-      # Insert each event
-      final_version =
-        Enum.reduce_while(events, current_version, fn event, version ->
+      # Insert each event, collecting decoded events for broadcast
+      result =
+        Enum.reduce_while(events, {current_version, []}, fn event, {version, inserted_events} ->
           new_version = version + 1
           event_opts = Map.get(event, :opts, [])
 
@@ -266,23 +278,31 @@ defmodule Ipa.EventStore do
           }
 
           case %Event{} |> Event.changeset(event_attrs) |> Repo.insert() do
-            {:ok, _} -> {:cont, new_version}
-            {:error, reason} -> {:halt, {:error, reason}}
+            {:ok, inserted_event} ->
+              {:cont, {new_version, [decode_event(inserted_event) | inserted_events]}}
+            {:error, reason} ->
+              {:halt, {:error, reason}}
           end
         end)
 
-      case final_version do
+      case result do
         {:error, reason} ->
           Repo.rollback(reason)
 
-        version when is_integer(version) ->
+        {version, inserted_events} when is_integer(version) ->
           update_stream_timestamp(stream_id, now)
-          version
+          # Return version and events (reversed to maintain order)
+          {version, Enum.reverse(inserted_events)}
       end
     end)
     |> case do
-      {:ok, version} -> {:ok, version}
-      {:error, reason} -> {:error, reason}
+      {:ok, {version, inserted_events}} ->
+        # Broadcast all events
+        Enum.each(inserted_events, &broadcast_event_appended(stream_id, &1))
+        {:ok, version}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -327,14 +347,14 @@ defmodule Ipa.EventStore do
         query
       end
 
+    # Let DB errors crash - they indicate real problems (connection issues, etc.)
+    # Let decode errors crash - they indicate data corruption or schema bugs
     events =
       query
       |> Repo.all()
       |> Enum.map(&decode_event/1)
 
     {:ok, events}
-  rescue
-    e -> {:error, e}
   end
 
   @doc """
@@ -505,5 +525,50 @@ defmodule Ipa.EventStore do
       metadata: if(event.metadata, do: Jason.decode!(event.metadata, keys: :atoms), else: nil),
       inserted_at: event.inserted_at
     }
+  end
+
+  # ============================================================================
+  # PubSub Integration
+  # ============================================================================
+
+  @doc """
+  Subscribes the calling process to event notifications for a stream.
+
+  Messages received: `{:event_appended, stream_id, event}`
+
+  ## Examples
+
+      Ipa.EventStore.subscribe(stream_id)
+      # Process will now receive {:event_appended, stream_id, event} messages
+  """
+  @spec subscribe(stream_id :: String.t()) :: :ok
+  def subscribe(stream_id) do
+    Phoenix.PubSub.subscribe(Ipa.PubSub, "events:#{stream_id}")
+  end
+
+  @doc """
+  Unsubscribes the calling process from event notifications for a stream.
+  """
+  @spec unsubscribe(stream_id :: String.t()) :: :ok
+  def unsubscribe(stream_id) do
+    Phoenix.PubSub.unsubscribe(Ipa.PubSub, "events:#{stream_id}")
+  end
+
+  defp broadcast_event_appended(stream_id, event) do
+    case Phoenix.PubSub.broadcast(
+           Ipa.PubSub,
+           "events:#{stream_id}",
+           {:event_appended, stream_id, event}
+         ) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "Failed to broadcast event_appended for stream #{stream_id}: #{inspect(reason)}"
+        )
+
+        :ok
+    end
   end
 end

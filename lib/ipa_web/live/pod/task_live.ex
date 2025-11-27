@@ -10,23 +10,32 @@ defmodule IpaWeb.Pod.TaskLive do
   """
   use IpaWeb, :live_view
 
-  alias Ipa.Pod.State
-  alias Ipa.Pod.CommunicationsManager
+  alias Ipa.Pod.Manager
+
+  require Logger
 
   @impl true
   def mount(%{"task_id" => task_id}, _session, socket) do
     # Always read state from EventStore - single source of truth
     # This ensures we always see the latest events, whether or not the pod is running
-    case State.get_state_from_events(task_id) do
+    case Manager.get_state_from_events(task_id) do
       {:ok, state} ->
-        # Check if pod is running for subscription purposes
-        pod_running = State.get_state(task_id) != {:error, :not_found}
-
         # Subscribe to real-time updates when connected
         if connected?(socket) do
-          State.subscribe(task_id)
-          if pod_running, do: CommunicationsManager.subscribe(task_id)
+          # Subscribe to EventStore broadcasts - this is the primary real-time channel
+          # Works regardless of whether the pod is running
+          Ipa.EventStore.subscribe(task_id)
+
+          # Subscribe to Pod.Manager for when pod is running
+          Manager.subscribe(task_id)
+
+          # Auto-start pod if task is in an active phase and pod is not running
+          # This ensures the task continues processing when viewed
+          maybe_auto_start_pod(task_id, state.phase)
         end
+
+        # Load events for the Events tab
+        {:ok, events} = Ipa.EventStore.read_stream(task_id)
 
         socket =
           socket
@@ -37,6 +46,9 @@ defmodule IpaWeb.Pod.TaskLive do
           |> assign(message_input: "")
           |> assign(editing_spec: false)
           |> assign(spec_description: state.spec[:description] || state.spec["description"] || "")
+          |> assign(events: Enum.reverse(events))
+          |> assign(event_filter: "all")
+          |> assign(selected_event: nil)
 
         {:ok, socket}
 
@@ -53,19 +65,52 @@ defmodule IpaWeb.Pod.TaskLive do
     {:noreply, socket}
   end
 
-  # Real-time state updates - always reload from EventStore for consistency
+  # ============================================================================
+  # Real-time event handling via PubSub
+  # ============================================================================
+
+  # Primary real-time channel: EventStore broadcasts
+  # This fires whenever ANY event is appended, regardless of pod state
   @impl true
-  def handle_info({:state_updated, _task_id, _new_state}, socket) do
-    # Reload from EventStore to ensure we have the latest state
-    reload_state(socket)
+  def handle_info({:event_appended, task_id, event}, socket)
+      when task_id == socket.assigns.task_id do
+    # Add the new event to the events list
+    events = [event | socket.assigns.events]
+
+    # Rebuild state from the new event
+    # For efficiency, we apply the event to the current state instead of replaying all events
+    new_state = apply_event_to_state(event, socket.assigns.state)
+
+    {:noreply,
+     socket
+     |> assign(state: new_state)
+     |> assign(events: events)
+     |> assign(
+       spec_description:
+         new_state.spec[:description] || new_state.spec["description"] ||
+           socket.assigns.spec_description
+     )}
   end
 
-  # Message posted event
+  # State updates from State GenServer (when pod is running)
+  # These are still useful for state changes that come through the pod
+  def handle_info({:state_updated, _task_id, new_state}, socket) do
+    {:noreply,
+     socket
+     |> assign(state: new_state)
+     |> assign(
+       spec_description:
+         new_state.spec[:description] || new_state.spec["description"] ||
+           socket.assigns.spec_description
+     )}
+  end
+
+  # Message posted event from CommunicationsManager
   def handle_info({:message_posted, _task_id, _message}, socket) do
     reload_state(socket)
   end
 
-  # Approval events
+  # Approval events from CommunicationsManager
   def handle_info({:approval_requested, _task_id, _data}, socket) do
     reload_state(socket)
   end
@@ -76,11 +121,109 @@ defmodule IpaWeb.Pod.TaskLive do
 
   def handle_info(_msg, socket), do: {:noreply, socket}
 
+  # Apply a single event to the current state for incremental updates
+  # This mirrors the State module's apply_event logic but is simplified for common cases
+  defp apply_event_to_state(event, state) do
+    case event.event_type do
+      "spec_updated" ->
+        spec_data = event.data[:spec] || event.data
+
+        new_spec = %{
+          state.spec
+          | description: spec_data[:description] || state.spec[:description],
+            requirements: spec_data[:requirements] || state.spec[:requirements] || [],
+            acceptance_criteria:
+              spec_data[:acceptance_criteria] || state.spec[:acceptance_criteria] || []
+        }
+
+        %{state | spec: new_spec, version: event.version, updated_at: event.inserted_at}
+
+      "spec_approved" ->
+        new_spec = %{
+          state.spec
+          | approved?: true,
+            approved_by: event.data[:approved_by],
+            approved_at: event.inserted_at
+        }
+
+        %{state | spec: new_spec, version: event.version, updated_at: event.inserted_at}
+
+      "plan_approved" when state.plan != nil ->
+        new_plan = %{
+          state.plan
+          | approved?: true,
+            approved_by: event.data[:approved_by],
+            approved_at: event.inserted_at
+        }
+
+        %{state | plan: new_plan, version: event.version, updated_at: event.inserted_at}
+
+      "transition_requested" ->
+        to_phase = normalize_phase(event.data[:to_phase])
+        transition = %{to_phase: to_phase, reason: event.data[:reason]}
+        current_transitions = state.pending_transitions || []
+
+        %{
+          state
+          | pending_transitions: [transition | current_transitions],
+            version: event.version,
+            updated_at: event.inserted_at
+        }
+
+      "transition_approved" ->
+        to_phase = normalize_phase(event.data[:to_phase])
+
+        %{
+          state
+          | phase: to_phase,
+            pending_transitions: [],
+            version: event.version,
+            updated_at: event.inserted_at
+        }
+
+      "phase_changed" ->
+        to_phase = normalize_phase(event.data[:to_phase])
+        %{state | phase: to_phase, pending_transitions: [], version: event.version, updated_at: event.inserted_at}
+
+      _ ->
+        # For other event types, do a full reload to ensure consistency
+        # This is safe because we still have the event for the events list
+        case Manager.get_state_from_events(state.task_id) do
+          {:ok, new_state} -> new_state
+          _ -> %{state | version: event.version, updated_at: event.inserted_at}
+        end
+    end
+  end
+
+  @valid_phases ~w(spec_clarification planning workstream_execution review completed cancelled)a
+  defp normalize_phase(phase) when phase in @valid_phases, do: phase
+
+  defp normalize_phase(phase) when is_binary(phase) do
+    atom = String.to_existing_atom(phase)
+
+    if atom in @valid_phases do
+      atom
+    else
+      raise ArgumentError, "Invalid phase: #{inspect(phase)}"
+    end
+  end
+
+  defp normalize_phase(other) do
+    raise ArgumentError, "Invalid phase type: #{inspect(other)}"
+  end
+
   # Helper to reload state from EventStore
   defp reload_state(socket) do
-    case State.get_state_from_events(socket.assigns.task_id) do
-      {:ok, state} -> {:noreply, assign(socket, state: state)}
-      _ -> {:noreply, socket}
+    task_id = socket.assigns.task_id
+
+    case Manager.get_state_from_events(task_id) do
+      {:ok, state} ->
+        # Also reload events
+        {:ok, events} = Ipa.EventStore.read_stream(task_id)
+        {:noreply, socket |> assign(state: state) |> assign(events: Enum.reverse(events))}
+
+      _ ->
+        {:noreply, socket}
     end
   end
 
@@ -94,27 +237,14 @@ defmodule IpaWeb.Pod.TaskLive do
   def handle_event("approve_spec", _params, socket) do
     %{task_id: task_id} = socket.assigns
 
-    # Use EventStore directly - works whether pod is running or not
-    result = Ipa.EventStore.append(
-      task_id,
-      "spec_approved",
-      %{approved_by: "user", approved_at: System.system_time(:second)},
-      actor_id: "user"
-    )
-
-    case result do
-      {:ok, _version} ->
-        # Reload state from events to reflect the change
-        case State.get_state_from_events(task_id) do
-          {:ok, new_state} ->
-            {:noreply,
-             socket
-             |> assign(state: new_state)
-             |> put_flash(:info, "Spec approved")}
-
-          {:error, _} ->
-            {:noreply, put_flash(socket, :info, "Spec approved")}
-        end
+    # Route through Manager - ensures consistent event handling
+    with :ok <- ensure_pod_running(task_id),
+         {:ok, _version} <-
+           Manager.execute(task_id, Ipa.Pod.Commands.TaskCommands, :approve_spec, ["user", nil]) do
+      {:noreply, put_flash(socket, :info, "Spec approved")}
+    else
+      {:error, :already_approved} ->
+        {:noreply, put_flash(socket, :info, "Spec already approved")}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to approve spec: #{inspect(reason)}")}
@@ -142,34 +272,24 @@ defmodule IpaWeb.Pod.TaskLive do
     spec_data = %{
       description: description,
       requirements: state.spec[:requirements] || state.spec["requirements"] || [],
-      acceptance_criteria: state.spec[:acceptance_criteria] || state.spec["acceptance_criteria"] || []
+      acceptance_criteria:
+        state.spec[:acceptance_criteria] || state.spec["acceptance_criteria"] || []
     }
 
-    # Use EventStore directly - works whether pod is running or not
-    result = Ipa.EventStore.append(
-      task_id,
-      "spec_updated",
-      %{spec: spec_data},
-      actor_id: "user"
-    )
-
-    case result do
-      {:ok, _version} ->
-        # Reload state from events to reflect the change
-        case State.get_state_from_events(task_id) do
-          {:ok, new_state} ->
-            {:noreply,
-             socket
-             |> assign(state: new_state)
-             |> assign(editing_spec: false)
-             |> put_flash(:info, "Spec updated")}
-
-          {:error, _} ->
-            {:noreply,
-             socket
-             |> assign(editing_spec: false)
-             |> put_flash(:info, "Spec updated")}
-        end
+    # Route through Manager
+    with :ok <- ensure_pod_running(task_id),
+         {:ok, _version} <-
+           Manager.execute(task_id, Ipa.Pod.Commands.TaskCommands, :update_spec, [spec_data]) do
+      {:noreply,
+       socket
+       |> assign(editing_spec: false)
+       |> put_flash(:info, "Spec updated")}
+    else
+      {:error, :spec_already_approved} ->
+        {:noreply,
+         socket
+         |> assign(editing_spec: false)
+         |> put_flash(:error, "Cannot edit approved spec")}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to update spec: #{inspect(reason)}")}
@@ -180,27 +300,14 @@ defmodule IpaWeb.Pod.TaskLive do
   def handle_event("approve_plan", _params, socket) do
     %{task_id: task_id} = socket.assigns
 
-    # Use EventStore directly - works whether pod is running or not
-    result = Ipa.EventStore.append(
-      task_id,
-      "plan_approved",
-      %{approved_by: "user", approved_at: System.system_time(:second)},
-      actor_id: "user"
-    )
-
-    case result do
-      {:ok, _version} ->
-        # Reload state from events to reflect the change
-        case State.get_state_from_events(task_id) do
-          {:ok, new_state} ->
-            {:noreply,
-             socket
-             |> assign(state: new_state)
-             |> put_flash(:info, "Plan approved")}
-
-          {:error, _} ->
-            {:noreply, put_flash(socket, :info, "Plan approved")}
-        end
+    # Route through Manager
+    with :ok <- ensure_pod_running(task_id),
+         {:ok, _version} <-
+           Manager.execute(task_id, Ipa.Pod.Commands.TaskCommands, :approve_plan, ["user", nil]) do
+      {:noreply, put_flash(socket, :info, "Plan approved")}
+    else
+      {:error, :already_approved} ->
+        {:noreply, put_flash(socket, :info, "Plan already approved")}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to approve plan: #{inspect(reason)}")}
@@ -209,34 +316,23 @@ defmodule IpaWeb.Pod.TaskLive do
 
   # Transition approval
   def handle_event("approve_transition", %{"to_phase" => to_phase}, socket) do
-    %{task_id: task_id, state: state} = socket.assigns
+    %{task_id: task_id} = socket.assigns
 
-    # Use EventStore directly - works whether pod is running or not
-    # This avoids GenServer crashes when pod is stopped
-    result = Ipa.EventStore.append(
-      task_id,
-      "transition_approved",
-      %{
-        from_phase: Atom.to_string(state.phase),
-        to_phase: to_phase,
-        approved_by: "user"
-      },
-      actor_id: "user"
-    )
+    # Convert to atom for PhaseCommands
+    to_phase_atom =
+      if is_binary(to_phase), do: String.to_existing_atom(to_phase), else: to_phase
 
-    case result do
-      {:ok, _version} ->
-        # Reload state from events to reflect the change
-        case State.get_state_from_events(task_id) do
-          {:ok, new_state} ->
-            {:noreply,
-             socket
-             |> assign(state: new_state)
-             |> put_flash(:info, "Transition to #{to_phase} approved")}
-
-          {:error, _} ->
-            {:noreply, put_flash(socket, :info, "Transition to #{to_phase} approved")}
-        end
+    # Route through Manager
+    with :ok <- ensure_pod_running(task_id),
+         {:ok, _version} <-
+           Manager.execute(task_id, Ipa.Pod.Commands.PhaseCommands, :approve_transition, [
+             to_phase_atom,
+             "user"
+           ]) do
+      {:noreply, put_flash(socket, :info, "Transition to #{to_phase} approved")}
+    else
+      {:error, :no_pending_transition} ->
+        {:noreply, put_flash(socket, :error, "No pending transition to approve")}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to approve transition: #{inspect(reason)}")}
@@ -253,15 +349,23 @@ defmodule IpaWeb.Pod.TaskLive do
     %{task_id: task_id, message_input: content} = socket.assigns
 
     if String.trim(content) != "" do
-      case CommunicationsManager.post_message(
-             task_id,
-             type: String.to_atom(type),
-             content: content,
-             author: "user"
-           ) do
-        {:ok, _msg_id} ->
-          {:noreply, assign(socket, message_input: "")}
+      # Build params map for the command
+      # post_message(state, params) expects params map with :type, :content, :author, :thread_id
+      params = %{
+        type: type,
+        content: content,
+        author: "user",
+        thread_id: nil
+      }
 
+      # Route through Manager
+      with :ok <- ensure_pod_running(task_id),
+           {:ok, _version} <-
+             Manager.execute(task_id, Ipa.Pod.Commands.CommunicationCommands, :post_message, [
+               params
+             ]) do
+        {:noreply, assign(socket, message_input: "")}
+      else
         {:error, reason} ->
           {:noreply, put_flash(socket, :error, "Failed to post message: #{inspect(reason)}")}
       end
@@ -274,15 +378,16 @@ defmodule IpaWeb.Pod.TaskLive do
   def handle_event("give_approval", %{"message_id" => msg_id, "choice" => choice}, socket) do
     %{task_id: task_id} = socket.assigns
 
-    case CommunicationsManager.give_approval(
-           task_id,
-           msg_id,
-           approved_by: "user",
-           choice: choice
-         ) do
-      {:ok, _} ->
-        {:noreply, put_flash(socket, :info, "Approval given")}
-
+    # Route through Manager
+    with :ok <- ensure_pod_running(task_id),
+         {:ok, _version} <-
+           Manager.execute(task_id, Ipa.Pod.Commands.CommunicationCommands, :give_approval, [
+             msg_id,
+             choice,
+             "user"
+           ]) do
+      {:noreply, put_flash(socket, :info, "Approval given")}
+    else
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to give approval: #{inspect(reason)}")}
     end
@@ -291,6 +396,52 @@ defmodule IpaWeb.Pod.TaskLive do
   # Select workstream
   def handle_event("select_workstream", %{"id" => id}, socket) do
     {:noreply, assign(socket, selected_workstream_id: id)}
+  end
+
+  # Event filtering
+  def handle_event("filter_events", %{"filter" => filter}, socket) do
+    {:noreply, assign(socket, event_filter: filter)}
+  end
+
+  # Select event for details view
+  def handle_event("select_event", %{"version" => version}, socket) do
+    version = String.to_integer(version)
+    event = Enum.find(socket.assigns.events, fn e -> e.version == version end)
+    {:noreply, assign(socket, selected_event: event)}
+  end
+
+  # Clear selected event
+  def handle_event("clear_selected_event", _params, socket) do
+    {:noreply, assign(socket, selected_event: nil)}
+  end
+
+  # Start pod
+  def handle_event("start_pod", _params, socket) do
+    %{task_id: task_id} = socket.assigns
+
+    case Ipa.CentralManager.start_pod(task_id) do
+      {:ok, _pid} ->
+        {:noreply, put_flash(socket, :info, "Pod started")}
+
+      {:error, {:already_started, _}} ->
+        {:noreply, put_flash(socket, :info, "Pod already running")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to start pod: #{inspect(reason)}")}
+    end
+  end
+
+  # Stop pod
+  def handle_event("stop_pod", _params, socket) do
+    %{task_id: task_id} = socket.assigns
+
+    case Ipa.CentralManager.stop_pod(task_id) do
+      :ok ->
+        {:noreply, put_flash(socket, :info, "Pod stopped")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to stop pod: #{inspect(reason)}")}
+    end
   end
 
   @impl true
@@ -307,41 +458,82 @@ defmodule IpaWeb.Pod.TaskLive do
                   <.icon name="hero-arrow-left" class="w-5 h-5" />
                 </a>
                 <h1 class="text-xl font-semibold text-base-content">
-                  <%= @state.title || "Untitled Task" %>
+                  {@state.title || "Untitled Task"}
                 </h1>
               </div>
               <p class="text-sm text-base-content/60 mt-1">
-                Task ID: <code class="bg-base-200 px-1 rounded"><%= @task_id %></code>
+                Task ID: <code class="bg-base-200 px-1 rounded">{@task_id}</code>
               </p>
             </div>
             <div class="flex items-center gap-3">
-              <.phase_badge phase={@state.phase} />
-              <.pod_status_badge task_id={@task_id} />
+              <.pod_control_button task_id={@task_id} />
             </div>
           </div>
         </div>
       </header>
 
-      <!-- Tab Navigation -->
+    <!-- Phase Progress Indicator -->
+      <div class="bg-base-100 border-b border-base-300">
+        <div class="max-w-7xl mx-auto px-4 py-3">
+          <.phase_progress_indicator current_phase={@state.phase} />
+        </div>
+      </div>
+
+    <!-- Tab Navigation -->
       <div class="bg-base-100 border-b border-base-300">
         <div class="max-w-7xl mx-auto px-4">
           <nav class="flex gap-4">
             <.tab_button tab={:overview} active={@active_tab} label="Overview" />
-            <.tab_button tab={:workstreams} active={@active_tab} label="Workstreams" count={workstream_count(@state)} />
-            <.tab_button tab={:communications} active={@active_tab} label="Communications" count={unread_count(@state)} />
+            <.tab_button
+              tab={:workstreams}
+              active={@active_tab}
+              label="Workstreams"
+              count={workstream_count(@state)}
+            />
+            <.tab_button
+              tab={:agents}
+              active={@active_tab}
+              label="Agents"
+              count={agent_count(@state)}
+            />
+            <.tab_button
+              tab={:communications}
+              active={@active_tab}
+              label="Communications"
+              count={unread_count(@state)}
+            />
+            <.tab_button tab={:events} active={@active_tab} label="Events" count={length(@events)} />
           </nav>
         </div>
       </div>
 
-      <!-- Main Content -->
+    <!-- Main Content -->
       <main class="max-w-7xl mx-auto px-4 py-6">
         <%= case @active_tab do %>
           <% :overview -> %>
-            <.overview_tab state={@state} task_id={@task_id} editing_spec={@editing_spec} spec_description={@spec_description} />
+            <.overview_tab
+              state={@state}
+              task_id={@task_id}
+              editing_spec={@editing_spec}
+              spec_description={@spec_description}
+            />
           <% :workstreams -> %>
             <.workstreams_tab state={@state} selected_id={@selected_workstream_id} />
+          <% :agents -> %>
+            <.live_component
+              module={IpaWeb.Live.Components.AgentPanel}
+              id="agent-panel"
+              task_id={@task_id}
+              agents={@state.agents || []}
+            />
           <% :communications -> %>
             <.communications_tab state={@state} task_id={@task_id} message_input={@message_input} />
+          <% :events -> %>
+            <.events_tab
+              events={@events}
+              event_filter={@event_filter}
+              selected_event={@selected_event}
+            />
         <% end %>
       </main>
     </div>
@@ -350,28 +542,88 @@ defmodule IpaWeb.Pod.TaskLive do
 
   # Components
 
-  defp phase_badge(assigns) do
-    assigns = assign(assigns, :color, phase_color(assigns.phase))
-
-    ~H"""
-    <span class={"badge badge-lg #{@color}"}>
-      <%= format_phase(@phase) %>
-    </span>
-    """
-  end
-
-  defp pod_status_badge(assigns) do
+  # Pod control button (Start/Stop)
+  defp pod_control_button(assigns) do
     assigns = assign(assigns, :running, Ipa.PodSupervisor.pod_running?(assigns.task_id))
 
     ~H"""
-    <span class={if @running, do: "badge badge-success", else: "badge badge-ghost"}>
-      <%= if @running, do: "Pod Running", else: "Pod Stopped" %>
-    </span>
+    <div class="flex items-center gap-2">
+      <%= if @running do %>
+        <span class="badge badge-success gap-1">
+          <span class="w-2 h-2 bg-success-content rounded-full animate-pulse"></span> Running
+        </span>
+        <button phx-click="stop_pod" class="btn btn-sm btn-outline btn-error">
+          <.icon name="hero-stop" class="w-4 h-4" /> Stop Pod
+        </button>
+      <% else %>
+        <span class="badge badge-ghost">Stopped</span>
+        <button phx-click="start_pod" class="btn btn-sm btn-primary">
+          <.icon name="hero-play" class="w-4 h-4" /> Start Pod
+        </button>
+      <% end %>
+    </div>
+    """
+  end
+
+  # Phase progress indicator showing all stages
+  defp phase_progress_indicator(assigns) do
+    phases = [:spec_clarification, :planning, :workstream_execution, :review, :completed]
+    current_index = Enum.find_index(phases, &(&1 == assigns.current_phase)) || 0
+
+    assigns =
+      assigns
+      |> assign(:phases, phases)
+      |> assign(:current_index, current_index)
+
+    ~H"""
+    <div class="flex items-center justify-between">
+      <%= for {phase, index} <- Enum.with_index(@phases) do %>
+        <div class="flex items-center flex-1">
+          <!-- Phase step -->
+          <div class="flex flex-col items-center">
+            <div class={[
+              "w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium transition-all",
+              cond do
+                index < @current_index -> "bg-success text-success-content"
+                index == @current_index -> "bg-primary text-primary-content ring-4 ring-primary/20"
+                true -> "bg-base-300 text-base-content/40"
+              end
+            ]}>
+              <%= if index < @current_index do %>
+                <.icon name="hero-check" class="w-4 h-4" />
+              <% else %>
+                {index + 1}
+              <% end %>
+            </div>
+            <span class={[
+              "text-xs mt-1 text-center max-w-[80px]",
+              if(index == @current_index,
+                do: "font-semibold text-primary",
+                else: "text-base-content/60"
+              )
+            ]}>
+              {format_phase_short(phase)}
+            </span>
+          </div>
+          <!-- Connector line (except for last item) -->
+          <%= if index < length(@phases) - 1 do %>
+            <div class={[
+              "flex-1 h-1 mx-2 rounded transition-all",
+              if(index < @current_index, do: "bg-success", else: "bg-base-300")
+            ]} />
+          <% end %>
+        </div>
+      <% end %>
+    </div>
     """
   end
 
   defp tab_button(assigns) do
-    active_class = if assigns.tab == assigns.active, do: "border-primary text-primary", else: "border-transparent text-base-content/60 hover:text-base-content"
+    active_class =
+      if assigns.tab == assigns.active,
+        do: "border-primary text-primary",
+        else: "border-transparent text-base-content/60 hover:text-base-content"
+
     assigns = assign(assigns, :active_class, active_class)
 
     ~H"""
@@ -380,9 +632,9 @@ defmodule IpaWeb.Pod.TaskLive do
       phx-value-tab={@tab}
       class={"px-4 py-3 border-b-2 font-medium text-sm #{@active_class}"}
     >
-      <%= @label %>
+      {@label}
       <%= if assigns[:count] && @count > 0 do %>
-        <span class="ml-2 badge badge-sm badge-primary"><%= @count %></span>
+        <span class="ml-2 badge badge-sm badge-primary">{@count}</span>
       <% end %>
     </button>
     """
@@ -422,12 +674,12 @@ defmodule IpaWeb.Pod.TaskLive do
           <!-- View Mode -->
           <%= if @state.spec do %>
             <div class="prose prose-sm max-w-none">
-              <p><%= @state.spec[:description] || @state.spec["description"] || "No description" %></p>
+              <p>{@state.spec[:description] || @state.spec["description"] || "No description"}</p>
               <%= if requirements = @state.spec[:requirements] || @state.spec["requirements"] do %>
                 <h4>Requirements</h4>
                 <ul>
                   <%= for req <- List.wrap(requirements) do %>
-                    <li><%= req %></li>
+                    <li>{req}</li>
                   <% end %>
                 </ul>
               <% end %>
@@ -443,8 +695,7 @@ defmodule IpaWeb.Pod.TaskLive do
               </div>
             <% else %>
               <div class="mt-4 text-success flex items-center gap-2">
-                <.icon name="hero-check-circle" class="w-5 h-5" />
-                Spec Approved
+                <.icon name="hero-check-circle" class="w-5 h-5" /> Spec Approved
               </div>
             <% end %>
           <% else %>
@@ -458,13 +709,13 @@ defmodule IpaWeb.Pod.TaskLive do
         <% end %>
       </.card>
 
-      <!-- Plan Section -->
+    <!-- Plan Section -->
       <.card title="Plan">
         <%= if @state.plan do %>
           <%= if steps = @state.plan[:steps] || @state.plan["steps"] do %>
             <ol class="list-decimal list-inside space-y-2">
               <%= for step <- List.wrap(steps) do %>
-                <li class="text-base-content"><%= format_step(step) %></li>
+                <li class="text-base-content">{format_step(step)}</li>
               <% end %>
             </ol>
           <% end %>
@@ -476,8 +727,7 @@ defmodule IpaWeb.Pod.TaskLive do
             </div>
           <% else %>
             <div class="mt-4 text-success flex items-center gap-2">
-              <.icon name="hero-check-circle" class="w-5 h-5" />
-              Plan Approved
+              <.icon name="hero-check-circle" class="w-5 h-5" /> Plan Approved
             </div>
           <% end %>
         <% else %>
@@ -485,12 +735,14 @@ defmodule IpaWeb.Pod.TaskLive do
         <% end %>
       </.card>
 
-      <!-- Phase Transitions -->
+    <!-- Phase Transitions -->
       <%= if pending_transition = get_pending_transition(@state) do %>
         <.card title="Pending Transition">
           <div class="alert alert-warning">
             <.icon name="hero-exclamation-triangle" class="w-5 h-5" />
-            <span>Transition to <strong><%= pending_transition.to_phase %></strong> requires approval</span>
+            <span>
+              Transition to <strong>{pending_transition.to_phase}</strong> requires approval
+            </span>
             <button
               phx-click="approve_transition"
               phx-value-to_phase={pending_transition.to_phase}
@@ -502,7 +754,7 @@ defmodule IpaWeb.Pod.TaskLive do
         </.card>
       <% end %>
 
-      <!-- Quick Stats -->
+    <!-- Quick Stats -->
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <.stat_card label="Workstreams" value={workstream_count(@state)} icon="hero-queue-list" />
         <.stat_card label="Active Agents" value={active_agent_count(@state)} icon="hero-cpu-chip" />
@@ -515,15 +767,19 @@ defmodule IpaWeb.Pod.TaskLive do
   # Workstreams Tab
   defp workstreams_tab(assigns) do
     workstreams = Map.values(assigns.state.workstreams || %{})
-    selected_ws = if assigns.selected_id do
-      Enum.find(workstreams, fn ws -> ws.workstream_id == assigns.selected_id end)
-    end
+
+    selected_ws =
+      if assigns.selected_id do
+        Enum.find(workstreams, fn ws -> ws.workstream_id == assigns.selected_id end)
+      end
+
     # Find the agent for this workstream
-    selected_agent = if selected_ws do
-      Enum.find(assigns.state.agents || [], fn a ->
-        a.workstream_id == assigns.selected_id
-      end)
-    end
+    selected_agent =
+      if selected_ws do
+        Enum.find(assigns.state.agents || [], fn a ->
+          a.workstream_id == assigns.selected_id
+        end)
+      end
 
     assigns =
       assigns
@@ -550,7 +806,7 @@ defmodule IpaWeb.Pod.TaskLive do
         <% end %>
       </div>
 
-      <!-- Workstream Details Panel -->
+    <!-- Workstream Details Panel -->
       <%= if @selected_ws do %>
         <div class="lg:col-span-2">
           <.workstream_details_panel
@@ -576,13 +832,13 @@ defmodule IpaWeb.Pod.TaskLive do
       <div class="card-body p-4">
         <div class="flex items-start justify-between">
           <div class="flex-1 min-w-0">
-            <h3 class="font-medium truncate"><%= @workstream[:title] || @workstream.workstream_id %></h3>
+            <h3 class="font-medium truncate">{@workstream.title || @workstream.workstream_id}</h3>
             <%= if @workstream.spec do %>
-              <p class="text-sm text-base-content/60 mt-1 line-clamp-2"><%= @workstream.spec %></p>
+              <p class="text-sm text-base-content/60 mt-1 line-clamp-2">{@workstream.spec}</p>
             <% end %>
           </div>
           <span class={"badge #{@status_color} ml-2 flex-shrink-0"}>
-            <%= format_status(@workstream.status) %>
+            {format_status(@workstream.status)}
           </span>
         </div>
 
@@ -590,7 +846,7 @@ defmodule IpaWeb.Pod.TaskLive do
           <%= if length(deps) > 0 do %>
             <div class="mt-3 flex items-center gap-2 text-sm text-base-content/60">
               <.icon name="hero-link" class="w-4 h-4" />
-              <span>Depends on: <%= Enum.join(deps, ", ") %></span>
+              <span>Depends on: {Enum.join(deps, ", ")}</span>
             </div>
           <% end %>
         <% end %>
@@ -599,7 +855,7 @@ defmodule IpaWeb.Pod.TaskLive do
           <%= if length(blocking) > 0 do %>
             <div class="mt-2 text-sm text-warning flex items-center gap-2">
               <.icon name="hero-exclamation-triangle" class="w-4 h-4" />
-              <span>Blocked by: <%= Enum.join(blocking, ", ") %></span>
+              <span>Blocked by: {Enum.join(blocking, ", ")}</span>
             </div>
           <% end %>
         <% end %>
@@ -617,106 +873,104 @@ defmodule IpaWeb.Pod.TaskLive do
         <div class="flex items-start justify-between mb-4">
           <div>
             <h2 class="card-title text-lg flex items-center gap-2">
-              <.icon name="hero-queue-list" class="w-5 h-5" />
-              Workstream Details
+              <.icon name="hero-queue-list" class="w-5 h-5" /> Workstream Details
             </h2>
             <p class="text-sm text-base-content/60 mt-1">
-              <code class="bg-base-200 px-1 rounded"><%= @workstream.workstream_id %></code>
+              <code class="bg-base-200 px-1 rounded">{@workstream.workstream_id}</code>
             </p>
           </div>
-          <button phx-click="select_workstream" phx-value-id="" class="btn btn-ghost btn-sm btn-circle">
+          <button
+            phx-click="select_workstream"
+            phx-value-id=""
+            class="btn btn-ghost btn-sm btn-circle"
+          >
             <.icon name="hero-x-mark" class="w-5 h-5" />
           </button>
         </div>
 
-        <!-- Status Badge -->
+    <!-- Status Badge -->
         <div class="flex items-center gap-2 mb-4">
           <span class="text-sm font-medium">Status:</span>
           <span class={"badge #{workstream_status_color(@workstream.status)}"}>
-            <%= format_status(@workstream.status) %>
+            {format_status(@workstream.status)}
           </span>
         </div>
 
-        <!-- Specification -->
+    <!-- Specification -->
         <%= if @workstream.spec do %>
           <div class="mb-4">
             <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
-              <.icon name="hero-document-text" class="w-4 h-4" />
-              Specification
+              <.icon name="hero-document-text" class="w-4 h-4" /> Specification
             </h3>
             <div class="bg-base-200 rounded-lg p-3 text-sm">
-              <%= @workstream.spec %>
+              {@workstream.spec}
             </div>
           </div>
         <% end %>
 
-        <!-- Workspace Information -->
-        <%= if @workstream.workspace do %>
+    <!-- Workspace Information -->
+        <%= if @workstream.workspace_path do %>
           <div class="mb-4">
             <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
-              <.icon name="hero-folder" class="w-4 h-4" />
-              Workspace
+              <.icon name="hero-folder" class="w-4 h-4" /> Workspace
             </h3>
-            <.copyable_path path={@workstream.workspace} label="Workspace Path" />
+            <.copyable_path path={@workstream.workspace_path} label="Workspace Path" />
           </div>
         <% else %>
           <!-- Try to construct workspace path from task_id and agent_id -->
           <%= if @agent && @agent.workspace do %>
             <div class="mb-4">
               <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
-                <.icon name="hero-folder" class="w-4 h-4" />
-                Workspace
+                <.icon name="hero-folder" class="w-4 h-4" /> Workspace
               </h3>
               <.copyable_path path={@agent.workspace} label="Workspace Path" />
             </div>
           <% else %>
             <div class="mb-4">
               <h3 class="font-medium text-sm mb-2 flex items-center gap-2 text-base-content/60">
-                <.icon name="hero-folder" class="w-4 h-4" />
-                Workspace
+                <.icon name="hero-folder" class="w-4 h-4" /> Workspace
               </h3>
               <p class="text-sm text-base-content/60">No workspace created yet</p>
             </div>
           <% end %>
         <% end %>
 
-        <!-- Agent Information -->
+    <!-- Agent Information -->
         <%= if @agent do %>
           <div class="mb-4">
             <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
-              <.icon name="hero-cpu-chip" class="w-4 h-4" />
-              Agent
+              <.icon name="hero-cpu-chip" class="w-4 h-4" /> Agent
             </h3>
             <div class="bg-base-200 rounded-lg p-3 space-y-2">
               <div class="flex items-center justify-between">
                 <span class="text-sm text-base-content/60">Agent ID:</span>
-                <code class="text-xs bg-base-300 px-2 py-0.5 rounded"><%= @agent.agent_id %></code>
+                <code class="text-xs bg-base-300 px-2 py-0.5 rounded">{@agent.agent_id}</code>
               </div>
               <div class="flex items-center justify-between">
                 <span class="text-sm text-base-content/60">Type:</span>
-                <span class="text-sm"><%= @agent.agent_type %></span>
+                <span class="text-sm">{@agent.agent_type}</span>
               </div>
               <div class="flex items-center justify-between">
                 <span class="text-sm text-base-content/60">Status:</span>
                 <span class={"badge badge-sm #{agent_status_color(@agent.status)}"}>
-                  <%= format_status(@agent.status) %>
+                  {format_status(@agent.status)}
                 </span>
               </div>
               <%= if @agent.started_at do %>
                 <div class="flex items-center justify-between">
                   <span class="text-sm text-base-content/60">Started:</span>
-                  <span class="text-sm"><%= format_timestamp(@agent.started_at) %></span>
+                  <span class="text-sm">{format_timestamp(@agent.started_at)}</span>
                 </div>
               <% end %>
               <%= if @agent.completed_at do %>
                 <div class="flex items-center justify-between">
                   <span class="text-sm text-base-content/60">Completed:</span>
-                  <span class="text-sm"><%= format_timestamp(@agent.completed_at) %></span>
+                  <span class="text-sm">{format_timestamp(@agent.completed_at)}</span>
                 </div>
               <% end %>
               <%= if @agent.error do %>
                 <div class="mt-2 text-error text-sm">
-                  <span class="font-medium">Error:</span> <%= @agent.error %>
+                  <span class="font-medium">Error:</span> {@agent.error}
                 </div>
               <% end %>
             </div>
@@ -724,24 +978,22 @@ defmodule IpaWeb.Pod.TaskLive do
         <% else %>
           <div class="mb-4">
             <h3 class="font-medium text-sm mb-2 flex items-center gap-2 text-base-content/60">
-              <.icon name="hero-cpu-chip" class="w-4 h-4" />
-              Agent
+              <.icon name="hero-cpu-chip" class="w-4 h-4" /> Agent
             </h3>
             <p class="text-sm text-base-content/60">No agent assigned yet</p>
           </div>
         <% end %>
 
-        <!-- Dependencies -->
+    <!-- Dependencies -->
         <div class="mb-4">
           <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
-            <.icon name="hero-link" class="w-4 h-4" />
-            Dependencies
+            <.icon name="hero-link" class="w-4 h-4" /> Dependencies
           </h3>
           <%= if deps = @workstream.dependencies do %>
             <%= if length(deps) > 0 do %>
               <div class="flex flex-wrap gap-2">
                 <%= for dep <- deps do %>
-                  <span class="badge badge-outline"><%= dep %></span>
+                  <span class="badge badge-outline">{dep}</span>
                 <% end %>
               </div>
             <% else %>
@@ -752,40 +1004,38 @@ defmodule IpaWeb.Pod.TaskLive do
           <% end %>
         </div>
 
-        <!-- Blocking On -->
+    <!-- Blocking On -->
         <%= if blocking = @workstream.blocking_on do %>
           <%= if length(blocking) > 0 do %>
             <div class="mb-4">
               <h3 class="font-medium text-sm mb-2 flex items-center gap-2 text-warning">
-                <.icon name="hero-exclamation-triangle" class="w-4 h-4" />
-                Blocked By
+                <.icon name="hero-exclamation-triangle" class="w-4 h-4" /> Blocked By
               </h3>
               <div class="flex flex-wrap gap-2">
                 <%= for b <- blocking do %>
-                  <span class="badge badge-warning badge-outline"><%= b %></span>
+                  <span class="badge badge-warning badge-outline">{b}</span>
                 <% end %>
               </div>
             </div>
           <% end %>
         <% end %>
 
-        <!-- Timestamps -->
+    <!-- Timestamps -->
         <div class="border-t border-base-300 pt-4 mt-4">
           <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
-            <.icon name="hero-clock" class="w-4 h-4" />
-            Timeline
+            <.icon name="hero-clock" class="w-4 h-4" /> Timeline
           </h3>
           <div class="space-y-1 text-sm">
             <%= if @workstream.started_at do %>
               <div class="flex items-center justify-between">
                 <span class="text-base-content/60">Started:</span>
-                <span><%= format_timestamp(@workstream.started_at) %></span>
+                <span>{format_timestamp(@workstream.started_at)}</span>
               </div>
             <% end %>
             <%= if @workstream.completed_at do %>
               <div class="flex items-center justify-between">
                 <span class="text-base-content/60">Completed:</span>
-                <span><%= format_timestamp(@workstream.completed_at) %></span>
+                <span>{format_timestamp(@workstream.completed_at)}</span>
               </div>
             <% end %>
             <%= if !@workstream.started_at && !@workstream.completed_at do %>
@@ -803,7 +1053,7 @@ defmodule IpaWeb.Pod.TaskLive do
     ~H"""
     <div class="bg-base-200 rounded-lg p-3">
       <div class="flex items-center justify-between gap-2">
-        <code class="text-xs break-all flex-1"><%= @path %></code>
+        <code class="text-xs break-all flex-1">{@path}</code>
         <button
           phx-click={JS.dispatch("phx:copy", to: "#path-#{hash_path(@path)}")}
           class="btn btn-ghost btn-xs tooltip tooltip-left"
@@ -813,7 +1063,7 @@ defmodule IpaWeb.Pod.TaskLive do
         </button>
       </div>
       <input type="hidden" id={"path-#{hash_path(@path)}"} value={@path} />
-      <p class="text-xs text-base-content/60 mt-2"><%= @label %></p>
+      <p class="text-xs text-base-content/60 mt-2">{@label}</p>
     </div>
     """
   end
@@ -822,14 +1072,234 @@ defmodule IpaWeb.Pod.TaskLive do
     :crypto.hash(:md5, path) |> Base.encode16(case: :lower) |> String.slice(0, 8)
   end
 
-  # Communications Tab
-  defp communications_tab(assigns) do
-    messages = assigns.state.messages || []
-    inbox = assigns.state.inbox || []
+  # Events Tab - Agent Transactions History
+  defp events_tab(assigns) do
+    # Filter events based on selected filter
+    filtered_events = filter_events_by_type(assigns.events, assigns.event_filter)
+
+    # Get unique event types for filter dropdown
+    event_types = assigns.events |> Enum.map(& &1.event_type) |> Enum.uniq() |> Enum.sort()
 
     assigns =
       assigns
-      |> assign(:messages, Enum.sort_by(messages, & &1.posted_at, :desc))
+      |> assign(:filtered_events, filtered_events)
+      |> assign(:event_types, event_types)
+
+    ~H"""
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <!-- Events List -->
+      <div class={if @selected_event, do: "lg:col-span-2", else: "lg:col-span-3"}>
+        <.card title="Event History">
+          <!-- Filter Controls -->
+          <div class="mb-4 flex flex-wrap items-center gap-3">
+            <label class="text-sm font-medium text-base-content/70">Filter by type:</label>
+            <select
+              class="select select-bordered select-sm"
+              phx-change="filter_events"
+              name="filter"
+            >
+              <option value="all" selected={@event_filter == "all"}>All Events</option>
+              <option value="agent" selected={@event_filter == "agent"}>Agent Events</option>
+              <option value="workstream" selected={@event_filter == "workstream"}>
+                Workstream Events
+              </option>
+              <option value="task" selected={@event_filter == "task"}>Task Events</option>
+              <option value="message" selected={@event_filter == "message"}>Message Events</option>
+              <option value="transition" selected={@event_filter == "transition"}>
+                Transition Events
+              </option>
+              <%= for event_type <- @event_types do %>
+                <option value={event_type} selected={@event_filter == event_type}>
+                  {format_event_type(event_type)}
+                </option>
+              <% end %>
+            </select>
+            <span class="text-sm text-base-content/60">
+              Showing {length(@filtered_events)} of {length(@events)} events
+            </span>
+          </div>
+
+    <!-- Events Timeline -->
+          <div class="space-y-2 max-h-[600px] overflow-y-auto">
+            <%= if Enum.empty?(@filtered_events) do %>
+              <div class="text-center py-8 text-base-content/60">
+                <.icon name="hero-document-text" class="w-12 h-12 mx-auto mb-4 opacity-50" />
+                <p>No events found.</p>
+              </div>
+            <% else %>
+              <%= for event <- @filtered_events do %>
+                <.event_item
+                  event={event}
+                  selected={@selected_event && @selected_event.version == event.version}
+                />
+              <% end %>
+            <% end %>
+          </div>
+        </.card>
+      </div>
+
+    <!-- Event Details Panel -->
+      <%= if @selected_event do %>
+        <div class="lg:col-span-1">
+          <.event_details_panel event={@selected_event} />
+        </div>
+      <% end %>
+    </div>
+    """
+  end
+
+  # Event item in the timeline
+  defp event_item(assigns) do
+    assigns = assign(assigns, :event_color, event_type_color(assigns.event.event_type))
+    assigns = assign(assigns, :event_icon, event_type_icon(assigns.event.event_type))
+
+    ~H"""
+    <div
+      class={"flex items-start gap-3 p-3 rounded-lg cursor-pointer hover:bg-base-200 transition-colors #{if @selected, do: "bg-primary/10 ring-2 ring-primary/20", else: "bg-base-100 border border-base-300"}"}
+      phx-click="select_event"
+      phx-value-version={@event.version}
+    >
+      <!-- Event Type Icon -->
+      <div class={"w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 #{@event_color}"}>
+        <.icon name={@event_icon} class="w-5 h-5" />
+      </div>
+
+    <!-- Event Info -->
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center justify-between gap-2">
+          <span class="font-medium text-sm truncate">
+            {format_event_type(@event.event_type)}
+          </span>
+          <span class="text-xs text-base-content/60 flex-shrink-0">
+            v{@event.version}
+          </span>
+        </div>
+
+    <!-- Event Summary -->
+        <p class="text-xs text-base-content/60 mt-1 line-clamp-1">
+          {event_summary(@event)}
+        </p>
+
+    <!-- Metadata -->
+        <div class="flex items-center gap-3 mt-2 text-xs text-base-content/50">
+          <%= if @event.actor_id do %>
+            <span class="flex items-center gap-1">
+              <.icon name="hero-user" class="w-3 h-3" />
+              {@event.actor_id}
+            </span>
+          <% end %>
+          <span class="flex items-center gap-1">
+            <.icon name="hero-clock" class="w-3 h-3" />
+            {format_timestamp(@event.inserted_at)}
+          </span>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  # Event details panel
+  defp event_details_panel(assigns) do
+    ~H"""
+    <div class="card bg-base-100 shadow-sm border border-base-300 sticky top-4">
+      <div class="card-body">
+        <!-- Header -->
+        <div class="flex items-start justify-between mb-4">
+          <div>
+            <h2 class="card-title text-lg flex items-center gap-2">
+              <.icon name="hero-document-magnifying-glass" class="w-5 h-5" /> Event Details
+            </h2>
+            <p class="text-sm text-base-content/60 mt-1">
+              Version <span class="badge badge-sm badge-ghost">{@event.version}</span>
+            </p>
+          </div>
+          <button phx-click="clear_selected_event" class="btn btn-ghost btn-sm btn-circle">
+            <.icon name="hero-x-mark" class="w-5 h-5" />
+          </button>
+        </div>
+
+    <!-- Event Type -->
+        <div class="mb-4">
+          <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
+            <.icon name="hero-tag" class="w-4 h-4" /> Event Type
+          </h3>
+          <span class={"badge #{event_type_badge_color(@event.event_type)}"}>
+            {@event.event_type}
+          </span>
+        </div>
+
+    <!-- Timestamp -->
+        <div class="mb-4">
+          <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
+            <.icon name="hero-clock" class="w-4 h-4" /> Timestamp
+          </h3>
+          <p class="text-sm">{format_timestamp_full(@event.inserted_at)}</p>
+        </div>
+
+    <!-- Actor -->
+        <%= if @event.actor_id do %>
+          <div class="mb-4">
+            <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
+              <.icon name="hero-user" class="w-4 h-4" /> Actor
+            </h3>
+            <code class="text-xs bg-base-200 px-2 py-1 rounded">{@event.actor_id}</code>
+          </div>
+        <% end %>
+
+    <!-- Correlation ID -->
+        <%= if @event.correlation_id do %>
+          <div class="mb-4">
+            <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
+              <.icon name="hero-link" class="w-4 h-4" /> Correlation ID
+            </h3>
+            <code class="text-xs bg-base-200 px-2 py-1 rounded break-all">
+              {@event.correlation_id}
+            </code>
+          </div>
+        <% end %>
+
+    <!-- Event Data -->
+        <div class="mb-4">
+          <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
+            <.icon name="hero-code-bracket" class="w-4 h-4" /> Event Data
+          </h3>
+          <div class="bg-base-200 rounded-lg p-3 overflow-x-auto">
+            <pre class="text-xs whitespace-pre-wrap break-all"><%= format_event_data(@event.data) %></pre>
+          </div>
+        </div>
+
+    <!-- Metadata -->
+        <%= if @event.metadata do %>
+          <div class="mb-4">
+            <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
+              <.icon name="hero-information-circle" class="w-4 h-4" /> Metadata
+            </h3>
+            <div class="bg-base-200 rounded-lg p-3 overflow-x-auto">
+              <pre class="text-xs whitespace-pre-wrap break-all"><%= format_event_data(@event.metadata) %></pre>
+            </div>
+          </div>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  # Communications Tab
+  defp communications_tab(assigns) do
+    # Messages is a map in the new state structure
+    messages =
+      case assigns.state.messages do
+        msgs when is_map(msgs) -> Map.values(msgs)
+        msgs when is_list(msgs) -> msgs
+        _ -> []
+      end
+
+    # Use notifications instead of inbox
+    inbox = assigns.state.notifications || []
+
+    assigns =
+      assigns
+      |> assign(:messages, Enum.sort_by(messages, &(&1.posted_at || 0), :desc))
       |> assign(:inbox, inbox)
 
     ~H"""
@@ -856,7 +1326,7 @@ defmodule IpaWeb.Pod.TaskLive do
             </div>
           </div>
 
-          <!-- Messages -->
+    <!-- Messages -->
           <div class="space-y-3 max-h-96 overflow-y-auto">
             <%= if Enum.empty?(@messages) do %>
               <p class="text-center text-base-content/60 py-4">No messages yet.</p>
@@ -869,7 +1339,7 @@ defmodule IpaWeb.Pod.TaskLive do
         </.card>
       </div>
 
-      <!-- Inbox / Pending Approvals -->
+    <!-- Inbox / Pending Approvals -->
       <div class="space-y-4">
         <.card title="Inbox">
           <%= if Enum.empty?(@inbox) do %>
@@ -883,9 +1353,9 @@ defmodule IpaWeb.Pod.TaskLive do
           <% end %>
         </.card>
 
-        <!-- Pending Approvals -->
+    <!-- Pending Approvals -->
         <.card title="Pending Approvals">
-          <% pending = Enum.filter(@messages, fn m -> m.type == :approval && !m.approved? end) %>
+          <% pending = Enum.filter(@messages, fn m -> (Map.get(m, :message_type) || Map.get(m, :type)) == :approval && !m.approved? end) %>
           <%= if Enum.empty?(pending) do %>
             <p class="text-center text-base-content/60 py-4">No pending approvals.</p>
           <% else %>
@@ -902,20 +1372,23 @@ defmodule IpaWeb.Pod.TaskLive do
   end
 
   defp message_item(assigns) do
-    assigns = assign(assigns, :type_badge, message_type_badge(assigns.message.type))
+    # Handle both old :type and new :message_type field names
+    msg_type = Map.get(assigns.message, :message_type) || Map.get(assigns.message, :type) || :update
+    assigns = assign(assigns, :type_badge, message_type_badge(msg_type))
+    assigns = assign(assigns, :msg_type, msg_type)
 
     ~H"""
     <div class="bg-base-200 rounded-lg p-3">
       <div class="flex items-start justify-between">
         <div class="flex items-center gap-2">
-          <span class={"badge badge-sm #{@type_badge}"}><%= @message.type %></span>
-          <span class="text-sm font-medium"><%= @message.author %></span>
+          <span class={"badge badge-sm #{@type_badge}"}>{@msg_type}</span>
+          <span class="text-sm font-medium">{@message.author}</span>
         </div>
         <span class="text-xs text-base-content/60">
-          <%= format_timestamp(@message.posted_at) %>
+          {format_timestamp(@message.posted_at)}
         </span>
       </div>
-      <p class="mt-2 text-sm"><%= @message.content %></p>
+      <p class="mt-2 text-sm">{@message.content}</p>
     </div>
     """
   end
@@ -923,15 +1396,18 @@ defmodule IpaWeb.Pod.TaskLive do
   defp inbox_item(assigns) do
     msg = Enum.find(assigns.messages, fn m -> m.message_id == assigns.notification.message_id end)
     assigns = assign(assigns, :message, msg)
+    # Handle both old :type and new :notification_type field names
+    notif_type = Map.get(assigns.notification, :notification_type) || Map.get(assigns.notification, :type) || :update
+    assigns = assign(assigns, :notif_type, notif_type)
 
     ~H"""
     <div class={"p-2 rounded border #{if @notification.read?, do: "border-base-300 bg-base-100", else: "border-warning bg-warning/10"}"}>
       <div class="flex items-center gap-2">
-        <.icon name={notification_icon(@notification.type)} class="w-4 h-4" />
-        <span class="text-sm font-medium"><%= format_notification_type(@notification.type) %></span>
+        <.icon name={notification_icon(@notif_type)} class="w-4 h-4" />
+        <span class="text-sm font-medium">{format_notification_type(@notif_type)}</span>
       </div>
       <%= if @message do %>
-        <p class="text-xs text-base-content/60 mt-1 line-clamp-1"><%= @message.content %></p>
+        <p class="text-xs text-base-content/60 mt-1 line-clamp-1">{@message.content}</p>
       <% end %>
     </div>
     """
@@ -940,8 +1416,8 @@ defmodule IpaWeb.Pod.TaskLive do
   defp approval_item(assigns) do
     ~H"""
     <div class="border border-warning rounded-lg p-3 bg-warning/5">
-      <p class="font-medium text-sm"><%= @approval.content %></p>
-      <p class="text-xs text-base-content/60 mt-1">From: <%= @approval.author %></p>
+      <p class="font-medium text-sm">{@approval.content}</p>
+      <p class="text-xs text-base-content/60 mt-1">From: {@approval.author}</p>
       <%= if options = @approval.approval_options do %>
         <div class="flex gap-2 mt-3">
           <%= for option <- options do %>
@@ -951,7 +1427,7 @@ defmodule IpaWeb.Pod.TaskLive do
               phx-value-choice={option}
               class="btn btn-sm btn-outline"
             >
-              <%= option %>
+              {option}
             </button>
           <% end %>
         </div>
@@ -966,9 +1442,9 @@ defmodule IpaWeb.Pod.TaskLive do
     <div class="card bg-base-100 shadow-sm border border-base-300">
       <div class="card-body">
         <%= if assigns[:title] do %>
-          <h2 class="card-title text-lg"><%= @title %></h2>
+          <h2 class="card-title text-lg">{@title}</h2>
         <% end %>
-        <%= render_slot(@inner_block) %>
+        {render_slot(@inner_block)}
       </div>
     </div>
     """
@@ -983,8 +1459,8 @@ defmodule IpaWeb.Pod.TaskLive do
             <.icon name={@icon} class="w-6 h-6 text-primary" />
           </div>
           <div>
-            <p class="text-2xl font-bold"><%= @value %></p>
-            <p class="text-sm text-base-content/60"><%= @label %></p>
+            <p class="text-2xl font-bold">{@value}</p>
+            <p class="text-sm text-base-content/60">{@label}</p>
           </div>
         </div>
       </div>
@@ -994,25 +1470,23 @@ defmodule IpaWeb.Pod.TaskLive do
 
   # Helper Functions
 
-  defp phase_color(phase) do
-    case phase do
-      :spec_clarification -> "badge-info"
-      :planning -> "badge-warning"
-      :workstream_execution -> "badge-accent"
-      :executing -> "badge-accent"
-      :integration -> "badge-secondary"
-      :review -> "badge-primary"
-      :completed -> "badge-success"
-      :cancelled -> "badge-error"
-      _ -> "badge-ghost"
-    end
-  end
-
   defp format_phase(phase) do
     phase
     |> to_string()
     |> String.replace("_", " ")
     |> String.capitalize()
+  end
+
+  defp format_phase_short(phase) do
+    case phase do
+      :spec_clarification -> "Spec"
+      :planning -> "Planning"
+      :workstream_execution -> "Execution"
+      :review -> "Review"
+      :completed -> "Done"
+      :cancelled -> "Cancelled"
+      _ -> format_phase(phase)
+    end
   end
 
   defp workstream_status_color(status) do
@@ -1081,39 +1555,361 @@ defmodule IpaWeb.Pod.TaskLive do
     |> DateTime.from_unix!()
     |> Calendar.strftime("%b %d, %H:%M")
   end
+
   defp format_timestamp(_), do: ""
 
-  defp workstream_count(state) do
-    state.workstreams |> Map.values() |> length()
-  rescue
-    _ -> 0
+  defp workstream_count(%{workstreams: workstreams}) when is_map(workstreams) do
+    map_size(workstreams)
   end
 
-  defp active_agent_count(state) do
-    (state.agents || [])
-    |> Enum.count(fn a -> a.status == :running end)
-  rescue
-    _ -> 0
+  defp workstream_count(_state), do: 0
+
+  defp active_agent_count(%{agents: agents}) when is_list(agents) do
+    Enum.count(agents, fn a -> a.status == :running end)
   end
 
-  defp message_count(state) do
-    length(state.messages || [])
+  defp active_agent_count(_state), do: 0
+
+  defp agent_count(%{agents: agents}) when is_list(agents), do: length(agents)
+  defp agent_count(_state), do: 0
+
+  defp message_count(%{messages: messages}) when is_map(messages), do: map_size(messages)
+  defp message_count(%{messages: messages}) when is_list(messages), do: length(messages)
+  defp message_count(_state), do: 0
+
+  defp unread_count(%{notifications: notifications}) when is_list(notifications) do
+    Enum.count(notifications, fn n -> !n.read? end)
   end
 
-  defp unread_count(state) do
-    (state.inbox || [])
-    |> Enum.count(fn n -> !n.read? end)
-  rescue
-    _ -> 0
+  defp unread_count(_state), do: 0
+
+  defp get_pending_transition(%{pending_transitions: [first | _]}), do: first
+  defp get_pending_transition(_state), do: nil
+
+  # Event filtering helpers
+  defp filter_events_by_type(events, "all"), do: events
+
+  defp filter_events_by_type(events, "agent") do
+    Enum.filter(events, fn e ->
+      String.contains?(e.event_type, "agent")
+    end)
   end
 
-  defp get_pending_transition(state) do
-    # Get the first pending transition from the list
-    case state[:pending_transitions] || state.pending_transitions do
-      [first | _] -> first
-      _ -> nil
+  defp filter_events_by_type(events, "workstream") do
+    Enum.filter(events, fn e ->
+      String.contains?(e.event_type, "workstream")
+    end)
+  end
+
+  defp filter_events_by_type(events, "task") do
+    Enum.filter(events, fn e ->
+      String.starts_with?(e.event_type, "task_")
+    end)
+  end
+
+  defp filter_events_by_type(events, "message") do
+    Enum.filter(events, fn e ->
+      String.contains?(e.event_type, "message") or
+        String.contains?(e.event_type, "approval") or
+        String.contains?(e.event_type, "notification")
+    end)
+  end
+
+  defp filter_events_by_type(events, "transition") do
+    Enum.filter(events, fn e ->
+      String.contains?(e.event_type, "transition") or
+        String.contains?(e.event_type, "phase")
+    end)
+  end
+
+  defp filter_events_by_type(events, specific_type) do
+    Enum.filter(events, fn e -> e.event_type == specific_type end)
+  end
+
+  # Event type formatting
+  defp format_event_type(event_type) do
+    event_type
+    |> String.replace("_", " ")
+    |> String.split(" ")
+    |> Enum.map(&String.capitalize/1)
+    |> Enum.join(" ")
+  end
+
+  # Event type colors for timeline
+  defp event_type_color(event_type) do
+    cond do
+      String.contains?(event_type, "agent") ->
+        "bg-purple-100 text-purple-600"
+
+      String.contains?(event_type, "workstream") ->
+        "bg-blue-100 text-blue-600"
+
+      String.starts_with?(event_type, "task_") ->
+        "bg-green-100 text-green-600"
+
+      String.contains?(event_type, "spec") ->
+        "bg-yellow-100 text-yellow-600"
+
+      String.contains?(event_type, "plan") ->
+        "bg-orange-100 text-orange-600"
+
+      String.contains?(event_type, "transition") or String.contains?(event_type, "phase") ->
+        "bg-pink-100 text-pink-600"
+
+      String.contains?(event_type, "message") or String.contains?(event_type, "approval") ->
+        "bg-cyan-100 text-cyan-600"
+
+      String.contains?(event_type, "github") or String.contains?(event_type, "jira") ->
+        "bg-gray-100 text-gray-600"
+
+      true ->
+        "bg-base-200 text-base-content"
     end
-  rescue
-    _ -> nil
+  end
+
+  # Event type icons
+  defp event_type_icon(event_type) do
+    cond do
+      String.contains?(event_type, "agent_started") ->
+        "hero-play"
+
+      String.contains?(event_type, "agent_completed") ->
+        "hero-check-circle"
+
+      String.contains?(event_type, "agent_failed") ->
+        "hero-x-circle"
+
+      String.contains?(event_type, "agent") ->
+        "hero-cpu-chip"
+
+      String.contains?(event_type, "workstream_created") ->
+        "hero-plus-circle"
+
+      String.contains?(event_type, "workstream_completed") ->
+        "hero-check-circle"
+
+      String.contains?(event_type, "workstream_failed") ->
+        "hero-x-circle"
+
+      String.contains?(event_type, "workstream") ->
+        "hero-queue-list"
+
+      String.contains?(event_type, "task_created") ->
+        "hero-document-plus"
+
+      String.contains?(event_type, "task_completed") ->
+        "hero-check-badge"
+
+      String.contains?(event_type, "task_cancelled") ->
+        "hero-x-mark"
+
+      String.starts_with?(event_type, "task_") ->
+        "hero-document"
+
+      String.contains?(event_type, "spec") ->
+        "hero-document-text"
+
+      String.contains?(event_type, "plan") ->
+        "hero-clipboard-document-list"
+
+      String.contains?(event_type, "transition") or String.contains?(event_type, "phase") ->
+        "hero-arrow-right-circle"
+
+      String.contains?(event_type, "approval") ->
+        "hero-hand-thumb-up"
+
+      String.contains?(event_type, "message") ->
+        "hero-chat-bubble-left"
+
+      String.contains?(event_type, "notification") ->
+        "hero-bell"
+
+      String.contains?(event_type, "github") ->
+        "hero-code-bracket"
+
+      String.contains?(event_type, "jira") ->
+        "hero-ticket"
+
+      String.contains?(event_type, "workspace") ->
+        "hero-folder"
+
+      true ->
+        "hero-bolt"
+    end
+  end
+
+  # Event type badge colors
+  defp event_type_badge_color(event_type) do
+    cond do
+      String.contains?(event_type, "agent") ->
+        "badge-secondary"
+
+      String.contains?(event_type, "workstream") ->
+        "badge-info"
+
+      String.starts_with?(event_type, "task_") ->
+        "badge-success"
+
+      String.contains?(event_type, "spec") or String.contains?(event_type, "plan") ->
+        "badge-warning"
+
+      String.contains?(event_type, "transition") or String.contains?(event_type, "phase") ->
+        "badge-accent"
+
+      String.contains?(event_type, "failed") or String.contains?(event_type, "cancelled") ->
+        "badge-error"
+
+      String.contains?(event_type, "completed") or String.contains?(event_type, "approved") ->
+        "badge-success"
+
+      true ->
+        "badge-ghost"
+    end
+  end
+
+  # Event summary - creates a brief description of the event
+  defp event_summary(event) do
+    data = event.data
+
+    case event.event_type do
+      "task_created" ->
+        "Created task: #{data[:title] || "Untitled"}"
+
+      "task_completed" ->
+        "Task completed"
+
+      "task_cancelled" ->
+        "Task cancelled"
+
+      "spec_updated" ->
+        "Specification updated"
+
+      "spec_approved" ->
+        "Spec approved by #{data[:approved_by] || "user"}"
+
+      "plan_updated" ->
+        "Plan updated with #{length(data[:steps] || data[:plan][:steps] || [])} steps"
+
+      "plan_approved" ->
+        "Plan approved by #{data[:approved_by] || "user"}"
+
+      "transition_requested" ->
+        "Transition to #{data[:to_phase]} requested"
+
+      "transition_approved" ->
+        "Transition to #{data[:to_phase]} approved"
+
+      "agent_started" ->
+        "Agent #{data[:agent_id]} started (#{data[:agent_type]})"
+
+      "agent_completed" ->
+        "Agent #{data[:agent_id]} completed"
+
+      "agent_failed" ->
+        "Agent #{data[:agent_id]} failed: #{String.slice(data[:error] || "", 0, 50)}"
+
+      "workstream_created" ->
+        "Created workstream: #{data[:workstream_id]}"
+
+      "workstream_agent_started" ->
+        "Agent #{data[:agent_id]} started for #{data[:workstream_id]}"
+
+      "workstream_completed" ->
+        "Workstream #{data[:workstream_id]} completed"
+
+      "workstream_failed" ->
+        "Workstream #{data[:workstream_id]} failed"
+
+      "message_posted" ->
+        "#{data[:author]}: #{String.slice(data[:content] || "", 0, 50)}"
+
+      "approval_requested" ->
+        "Approval requested: #{String.slice(data[:question] || "", 0, 50)}"
+
+      "approval_given" ->
+        "Approval given: #{data[:choice]}"
+
+      "workspace_created" ->
+        "Workspace created for agent #{data[:agent_id]}"
+
+      "github_pr_created" ->
+        "PR ##{data[:pr_number]} created"
+
+      "github_pr_merged" ->
+        "PR merged"
+
+      "jira_ticket_updated" ->
+        "JIRA #{data[:ticket_id]} updated"
+
+      _ ->
+        inspect_data_summary(data)
+    end
+  end
+
+  defp inspect_data_summary(data) when is_map(data) do
+    keys = Map.keys(data) |> Enum.take(3) |> Enum.join(", ")
+    "Data: #{keys}..."
+  end
+
+  defp inspect_data_summary(_), do: ""
+
+  # Format event data as pretty JSON
+  defp format_event_data(nil), do: "null"
+
+  defp format_event_data(data) do
+    case Jason.encode(data, pretty: true) do
+      {:ok, json} -> json
+      {:error, _} -> inspect(data, pretty: true)
+    end
+  end
+
+  # Full timestamp formatting
+  defp format_timestamp_full(unix) when is_integer(unix) do
+    unix
+    |> DateTime.from_unix!()
+    |> Calendar.strftime("%Y-%m-%d %H:%M:%S UTC")
+  end
+
+  defp format_timestamp_full(_), do: "Unknown"
+
+  # Auto-start pod for active tasks that don't have a running pod
+  # This ensures tasks continue processing when viewed in the UI
+  defp maybe_auto_start_pod(task_id, phase)
+       when phase in [:spec_clarification, :planning, :workstream_execution, :review] do
+    unless Ipa.PodSupervisor.pod_running?(task_id) do
+      case Ipa.CentralManager.start_pod(task_id) do
+        {:ok, _pid} ->
+          Logger.info("Auto-started pod for task #{task_id} in phase #{phase}")
+
+        {:error, {:already_started, _pid}} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("Failed to auto-start pod for task #{task_id}: #{inspect(reason)}")
+      end
+    end
+  end
+
+  defp maybe_auto_start_pod(_task_id, _phase), do: :ok
+
+  # Helper to ensure pod is running before executing commands
+  # Returns :ok if pod is running or was started successfully
+  defp ensure_pod_running(task_id) do
+    if Ipa.PodSupervisor.pod_running?(task_id) do
+      :ok
+    else
+      case Ipa.CentralManager.start_pod(task_id) do
+        {:ok, _pid} ->
+          Logger.info("Started pod for task #{task_id} before command execution")
+          :ok
+
+        {:error, {:already_started, _pid}} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.error("Failed to start pod for task #{task_id}: #{inspect(reason)}")
+          {:error, {:pod_start_failed, reason}}
+      end
+    end
   end
 end

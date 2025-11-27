@@ -13,9 +13,17 @@ IPA (Intelligent Process Automation) is a pod-based task management system built
 - **Backend**: Elixir/Phoenix with LiveView
 - **State Management**: Event Sourcing with custom implementation
 - **Persistence**: PostgreSQL with JSON events via Ecto
-- **Agent Runtime**: Elixir Claude Code SDK (https://hexdocs.pm/claude_code/readme.html)
+- **Agent Runtime**: Claude Agent SDK TypeScript wrapper for Elixir (https://hexdocs.pm/claude_agent_sdk_ts/readme.html)
 - **Concurrency**: Elixir supervision trees
 - **Version Control**: Git (repo: git@github.com:xorvo/ipa.git)
+- **Dev Toolings**
+  - playwright mcp
+  - use elixir's `dbg()` smartly for debugging
+
+## Tips
+
+- Try using some smarter ways to access server logs so you don't waste too much of the context window when checking them. (maybe consider outputing to a file and then filtering on it and tail it only when you need to)
+- Try to use newer versions of everything
 
 ## Core Architecture
 
@@ -302,40 +310,11 @@ Ipa.Pod.WorkspaceManager.read_file(task_id, workstream_id, relative_path)
 ```
 
 ### Agent Spawning
-```elixir
-# Spawn agent via Claude Code SDK (in workstream workspace)
-{:ok, stream} = ClaudeCode.run_task(
-  prompt: workstream_task_prompt,
-  cwd: workspace_path,  # Includes workstream-specific CLAUDE.md
-  allowed_tools: [:read, :bash],
-  stream: true
-)
-```
 
-## Critical Design Considerations
+Use the Elixir claude_agent_sdk_ts package (TypeScript wrapper)
+Docs: https://hexdocs.pm/claude_agent_sdk_ts/readme.html
 
-### Optimistic Concurrency
-Use version checking when appending events to detect conflicts:
-```elixir
-Ipa.Pod.State.append_event(task_id, event_type, data, expected_version)
-# Returns {:ok, new_version} | {:error, :version_conflict}
-```
-
-### Pod-Local Pub-Sub
-Components within a pod communicate via pub-sub topic `pod:{task_id}:state`:
-- Scheduler subscribes to react to state changes (workstream completion, approvals)
-- CommunicationsManager subscribes to send notifications
-- ExternalSync subscribes to push updates
-- LiveView subscribes for real-time UI updates
-
-### State Persistence
-Pods must flush state to disk before shutdown. On restart, state is reloaded from persisted event store by replaying all events (task, workstreams, messages).
-
-### Workstream Dependencies
-Dependencies between workstreams are explicitly tracked in the state. Scheduler monitors completions and unblocks waiting workstreams when dependencies are satisfied.
-
-### Single Event Stream per Task
-All events (task, workstreams, agents, messages) are stored in a single event stream per task. While concurrent workstream writes may encounter version conflicts, the retry mechanism ensures all events are eventually appended successfully.
+Make sure you spin up agents with enough permissions so it doesn't get blocked waiting for user inputs.
 
 ## External Integrations
 
@@ -422,6 +401,6 @@ CREATE TABLE snapshots (
 
 - PostgreSQL: https://www.postgresql.org/
 - Ecto: https://hexdocs.pm/ecto/
-- Claude Code SDK: https://hexdocs.pm/claude_code/readme.html
+- Claude Agent SDK (TypeScript): https://hexdocs.pm/claude_agent_sdk_ts/readme.html
 - Phoenix LiveView: https://hexdocs.pm/phoenix_live_view/
 - Elixir Supervision: https://hexdocs.pm/elixir/Supervisor.html

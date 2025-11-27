@@ -23,7 +23,7 @@ defmodule Ipa.Pod.ExternalSync do
 
   alias Ipa.Pod.ExternalSync.GitHubConnector
   alias Ipa.Pod.ExternalSync.SyncQueue
-  alias Ipa.Pod.State
+  alias Ipa.Pod.Manager
 
   @type task_id :: String.t()
   @type sync_status :: :idle | :syncing | :error
@@ -207,7 +207,7 @@ defmodule Ipa.Pod.ExternalSync do
     github_config = Keyword.get(opts, :github, %{})
 
     # Subscribe to state changes
-    State.subscribe(task_id)
+    Manager.subscribe(task_id)
 
     # Initialize sync queue
     {:ok, queue_pid} = SyncQueue.start_link(task_id: task_id)
@@ -313,15 +313,26 @@ defmodule Ipa.Pod.ExternalSync do
         {:reply, {:error, :no_pr_exists}, state}
 
       pr_number ->
-        # Create approval request via Communications Manager
-        case Ipa.Pod.CommunicationsManager.request_approval(
-               state.task_id,
-               question: "Ready to merge PR ##{pr_number}?",
-               options: ["Merge", "Not yet"],
-               author: "external_sync",
-               blocking?: false
-             ) do
-          {:ok, msg_id} ->
+        # Create approval request via EventStore directly
+        msg_id = Ecto.UUID.generate()
+
+        result =
+          Ipa.EventStore.append(
+            state.task_id,
+            "approval_requested",
+            %{
+              message_id: msg_id,
+              question: "Ready to merge PR ##{pr_number}?",
+              options: ["Merge", "Not yet"],
+              author: "external_sync",
+              blocking?: false,
+              posted_at: System.system_time(:second)
+            },
+            actor_id: "external_sync"
+          )
+
+        case result do
+          {:ok, _version} ->
             {:reply, {:ok, msg_id}, state}
 
           error ->
@@ -426,21 +437,9 @@ defmodule Ipa.Pod.ExternalSync do
   end
 
   defp load_existing_pr_info(state) do
-    case State.get_state(state.task_id) do
-      {:ok, task_state} ->
-        github = task_state.external_sync.github
-
-        new_github = %{
-          state.github
-          | pr_number: github.pr_number,
-            pr_url: github.pr_url
-        }
-
-        %{state | github: new_github}
-
-      _ ->
-        state
-    end
+    # External sync manages its own state, so we just return as-is
+    # PR info is tracked internally and via events, not in Manager state
+    state
   end
 
   defp schedule_poll(state) do
@@ -560,14 +559,14 @@ defmodule Ipa.Pod.ExternalSync do
   end
 
   defp get_pr_title(task_id) do
-    case State.get_state(task_id) do
+    case Manager.get_state(task_id) do
       {:ok, state} -> state.title || "Task #{String.slice(task_id, 0, 8)}"
       _ -> "Task #{String.slice(task_id, 0, 8)}"
     end
   end
 
   defp get_pr_body(task_id) do
-    case State.get_state(task_id) do
+    case Manager.get_state(task_id) do
       {:ok, state} ->
         """
         ## Task
@@ -596,27 +595,25 @@ defmodule Ipa.Pod.ExternalSync do
   end
 
   defp record_pr_created(task_id, pr_number, pr_url) do
-    State.append_event(
+    Ipa.EventStore.append(
       task_id,
       "github_pr_created",
       %{pr_number: pr_number, pr_url: pr_url},
-      nil,
       actor_id: "external_sync"
     )
   end
 
   defp record_pr_merged(task_id) do
-    State.append_event(
+    Ipa.EventStore.append(
       task_id,
       "github_pr_merged",
       %{},
-      nil,
       actor_id: "external_sync"
     )
   end
 
   defp pr_merged?(task_id) do
-    case State.get_state(task_id) do
+    case Manager.get_state(task_id) do
       {:ok, state} -> state.external_sync.github.pr_merged?
       _ -> false
     end

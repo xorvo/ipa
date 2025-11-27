@@ -241,11 +241,10 @@ defmodule Ipa.Pod.ExternalSync.SyncQueue do
                  draft: data[:draft] || false
                ) do
             {:ok, pr_number, pr_url} ->
-              Ipa.Pod.State.append_event(
+              Ipa.EventStore.append(
                 data.task_id,
                 "github_pr_created",
                 %{workstream_id: data.workstream_id, pr_number: pr_number, pr_url: pr_url},
-                nil,
                 actor_id: "sync_queue"
               )
               :ok
@@ -286,11 +285,10 @@ defmodule Ipa.Pod.ExternalSync.SyncQueue do
       case GitHubConnector.merge_pr(repo, pr_number, method) do
         :ok ->
           # Record merge
-          Ipa.Pod.State.append_event(
+          Ipa.EventStore.append(
             data.task_id,
             "github_pr_merged",
             %{workstream_id: data.workstream_id},
-            nil,
             actor_id: "sync_queue"
           )
 
@@ -344,9 +342,15 @@ defmodule Ipa.Pod.ExternalSync.SyncQueue do
 
   defp get_repo_for_workstream(task_id, workstream_id) do
     # Get repo from workstream (each workstream can target a different repo)
-    case Ipa.Pod.State.get_workstream(task_id, workstream_id) do
-      {:ok, %{repo: repo}} when is_binary(repo) -> repo
-      _ -> nil
+    case Ipa.Pod.Manager.get_state(task_id) do
+      {:ok, state} ->
+        case Map.get(state.workstreams, workstream_id) do
+          %{repo: repo} when is_binary(repo) -> repo
+          _ -> nil
+        end
+
+      {:error, _} ->
+        nil
     end
   end
 

@@ -1,0 +1,573 @@
+defmodule Ipa.Pod.Manager do
+  @moduledoc """
+  Pod Manager - orchestrates event-sourced state management.
+
+  This is a thin GenServer that orchestrates:
+  - State management (via Projector)
+  - Command execution
+  - Event persistence
+  - Scheduler evaluation
+  - PubSub broadcasting
+
+  ## Usage
+
+      # Start a pod
+      {:ok, pid} = Manager.start_link(task_id: "task-123")
+
+      # Get current state
+      {:ok, state} = Manager.get_state("task-123")
+
+      # Execute a command
+      {:ok, version} = Manager.execute("task-123", TaskCommands, :approve_spec, ["user-1", nil])
+
+  ## PubSub
+
+  Subscribe to `"pod:{task_id}"` for state updates:
+  - `{:state_updated, task_id, state}` - Any state change
+  """
+
+  use GenServer
+  require Logger
+
+  alias Ipa.EventStore
+  alias Ipa.Pod.State
+  alias Ipa.Pod.State.Projector
+  alias Ipa.Pod.Machine.Evaluator
+  alias Ipa.Pod.Commands.{
+    PhaseCommands,
+    WorkstreamCommands,
+    AgentCommands
+  }
+
+  # ============================================================================
+  # Client API
+  # ============================================================================
+
+  @doc "Starts the Pod Manager for a task."
+  def start_link(opts) do
+    task_id = Keyword.fetch!(opts, :task_id)
+    GenServer.start_link(__MODULE__, opts, name: via_tuple(task_id))
+  end
+
+  @doc "Gets the current state of the pod."
+  @spec get_state(String.t()) :: {:ok, State.t()} | {:error, :not_found}
+  def get_state(task_id) do
+    case GenServer.whereis(via_tuple(task_id)) do
+      nil -> {:error, :not_found}
+      pid -> {:ok, GenServer.call(pid, :get_state)}
+    end
+  end
+
+  @doc """
+  Gets state by replaying events (for when pod is not running).
+  """
+  @spec get_state_from_events(String.t()) :: {:ok, State.t()} | {:error, :not_found}
+  def get_state_from_events(task_id) do
+    # read_stream always succeeds or raises on DB error
+    {:ok, events} = EventStore.read_stream(task_id)
+
+    case events do
+      [] -> {:error, :not_found}
+      events -> {:ok, Projector.replay(events, State.new(task_id))}
+    end
+  end
+
+  @doc """
+  Executes a command and persists resulting events.
+
+  ## Examples
+
+      # Approve spec
+      Manager.execute(task_id, TaskCommands, :approve_spec, ["user-1", nil])
+
+      # Create workstream
+      Manager.execute(task_id, WorkstreamCommands, :create_workstream, [%{title: "Setup"}])
+  """
+  @spec execute(String.t(), module(), atom(), list()) ::
+          {:ok, integer()} | {:error, term()}
+  def execute(task_id, command_module, command_fn, args \\ []) do
+    case GenServer.whereis(via_tuple(task_id)) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:execute, command_module, command_fn, args})
+    end
+  end
+
+  @doc "Subscribes to pod state updates."
+  @spec subscribe(String.t()) :: :ok
+  def subscribe(task_id) do
+    Phoenix.PubSub.subscribe(Ipa.PubSub, "pod:#{task_id}")
+  end
+
+  @doc "Manually triggers scheduler evaluation."
+  @spec evaluate(String.t()) :: :ok
+  def evaluate(task_id) do
+    case GenServer.whereis(via_tuple(task_id)) do
+      nil -> :ok
+      pid -> send(pid, :evaluate)
+    end
+
+    :ok
+  end
+
+  @doc "Notifies the manager of an agent completion."
+  @spec notify_agent_completed(String.t(), String.t(), map()) :: :ok
+  def notify_agent_completed(task_id, agent_id, result) do
+    case GenServer.whereis(via_tuple(task_id)) do
+      nil -> :ok
+      pid -> GenServer.cast(pid, {:agent_completed, agent_id, result})
+    end
+  end
+
+  @doc "Notifies the manager of an agent failure."
+  @spec notify_agent_failed(String.t(), String.t(), String.t()) :: :ok
+  def notify_agent_failed(task_id, agent_id, error) do
+    case GenServer.whereis(via_tuple(task_id)) do
+      nil -> :ok
+      pid -> GenServer.cast(pid, {:agent_failed, agent_id, error})
+    end
+  end
+
+  # ============================================================================
+  # GenServer Callbacks
+  # ============================================================================
+
+  @impl true
+  def init(opts) do
+    task_id = Keyword.fetch!(opts, :task_id)
+    Logger.info("Pod.Manager starting for task #{task_id}")
+
+    # Subscribe to EventStore broadcasts so we see events appended by other processes (e.g., LiveView)
+    EventStore.subscribe(task_id)
+
+    state = recover_state(task_id)
+    schedule_evaluation(state.config.evaluation_interval)
+
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_call(:get_state, _from, state) do
+    {:reply, state, state}
+  end
+
+  @impl true
+  def handle_call({:execute, command_module, command_fn, args}, _from, state) do
+    # Execute command to get events
+    case apply(command_module, command_fn, [state | args]) do
+      {:ok, events} ->
+        # Persist and apply events
+        case persist_and_apply_events(state, events) do
+          {:ok, new_state} ->
+            broadcast_state_update(new_state)
+            maybe_trigger_evaluation(events)
+            {:reply, {:ok, new_state.version}, new_state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_cast({:agent_completed, agent_id, result}, state) do
+    Logger.info("Agent #{agent_id} completed", task_id: state.task_id)
+
+    # Find workstream for this agent
+    workstream_id = find_workstream_for_agent(state, agent_id)
+
+    new_state =
+      if workstream_id do
+        # Complete the workstream
+        case WorkstreamCommands.complete_workstream(state, workstream_id, result) do
+          {:ok, events} ->
+            case persist_and_apply_events(state, events) do
+              {:ok, updated_state} ->
+                broadcast_state_update(updated_state)
+                send(self(), :evaluate)
+                updated_state
+
+              _ ->
+                state
+            end
+
+          _ ->
+            state
+        end
+      else
+        state
+      end
+
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_cast({:agent_failed, agent_id, error}, state) do
+    Logger.error("Agent #{agent_id} failed: #{error}", task_id: state.task_id)
+
+    workstream_id = find_workstream_for_agent(state, agent_id)
+
+    new_state =
+      if workstream_id do
+        case WorkstreamCommands.fail_workstream(state, workstream_id, error, false) do
+          {:ok, events} ->
+            case persist_and_apply_events(state, events) do
+              {:ok, updated_state} ->
+                broadcast_state_update(updated_state)
+                updated_state
+
+              _ ->
+                state
+            end
+
+          _ ->
+            state
+        end
+      else
+        state
+      end
+
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_info(:evaluate, state) do
+    new_state = run_evaluation(state)
+    schedule_evaluation(state.config.evaluation_interval)
+    {:noreply, new_state}
+  end
+
+  # Handle events appended by other processes (e.g., LiveView approvals)
+  # This keeps our in-memory state in sync with EventStore
+  @impl true
+  def handle_info({:event_appended, stream_id, event}, state) when stream_id == state.task_id do
+    Logger.debug("Manager received external event: #{event.event_type} (v#{event.version})",
+      task_id: state.task_id
+    )
+
+    # Only apply if this event is newer than our current state
+    if event.version > state.version do
+      # Apply the event using the projector
+      new_state = apply_external_event(state, event)
+      broadcast_state_update(new_state)
+
+      # Trigger evaluation for significant events
+      if should_evaluate_after?(event.event_type) do
+        send(self(), :evaluate)
+      end
+
+      {:noreply, new_state}
+    else
+      {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  @impl true
+  def terminate(reason, state) do
+    Logger.info("Pod.Manager terminating for task #{state.task_id}: #{inspect(reason)}")
+    :ok
+  end
+
+  # ============================================================================
+  # Private Functions
+  # ============================================================================
+
+  defp via_tuple(task_id) do
+    {:via, Registry, {Ipa.PodRegistry, {:manager, task_id}}}
+  end
+
+  defp recover_state(task_id) do
+    case EventStore.read_stream(task_id) do
+      {:ok, events} when events != [] ->
+        Logger.info("Recovering state from #{length(events)} events")
+        Projector.replay(events, State.new(task_id))
+
+      _ ->
+        Logger.info("No events found, starting fresh")
+        State.new(task_id)
+    end
+  end
+
+  defp persist_and_apply_events(state, []), do: {:ok, state}
+
+  defp persist_and_apply_events(state, events) do
+    # Build batch for EventStore
+    event_batch =
+      Enum.map(events, fn event ->
+        %{
+          event_type: event.__struct__.event_type(),
+          data: event.__struct__.to_map(event),
+          opts: []
+        }
+      end)
+
+    case EventStore.append_batch(state.task_id, event_batch) do
+      {:ok, new_version} ->
+        # Apply events to state using the projector
+        new_state =
+          Enum.reduce(events, state, fn event, acc ->
+            Projector.apply(acc, event)
+          end)
+
+        {:ok, %{new_state | version: new_version}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp run_evaluation(state) do
+    actions = Evaluator.evaluate(state)
+
+    Enum.reduce(actions, state, fn action, acc ->
+      execute_action(acc, action)
+    end)
+  end
+
+  defp execute_action(state, {:request_transition, to_phase, reason}) do
+    case PhaseCommands.request_transition(state, to_phase, reason, "scheduler") do
+      {:ok, events} ->
+        case persist_and_apply_events(state, events) do
+          {:ok, new_state} ->
+            broadcast_state_update(new_state)
+            new_state
+
+          _ ->
+            state
+        end
+
+      _ ->
+        state
+    end
+  end
+
+  defp execute_action(state, {:start_workstream, workstream_id}) do
+    ws = State.get_workstream(state, workstream_id)
+
+    if ws do
+      context = %{
+        task_id: state.task_id,
+        workstream_id: workstream_id,
+        workstream_spec: ws.spec
+      }
+
+      # Try to start the agent
+      case start_agent_for_workstream(state, context) do
+        {:ok, agent_id, new_state} ->
+          # Mark workstream as started
+          case WorkstreamCommands.start_workstream(new_state, workstream_id, agent_id) do
+            {:ok, events} ->
+              case persist_and_apply_events(new_state, events) do
+                {:ok, updated_state} ->
+                  broadcast_state_update(updated_state)
+                  updated_state
+
+                _ ->
+                  new_state
+              end
+
+            _ ->
+              new_state
+          end
+
+        {:error, _} ->
+          state
+      end
+    else
+      state
+    end
+  end
+
+  defp execute_action(state, {:spawn_agent, :planning, context}) do
+    # Create workspace for planning agent
+    workspace_path = create_planning_workspace(state.task_id)
+
+    # Build proper context for the planning agent
+    agent_context = %{
+      task_id: state.task_id,
+      workspace: workspace_path,
+      task: %{
+        task_id: state.task_id,
+        title: context[:title] || state.title,
+        spec: context[:spec] || state.spec
+      }
+    }
+
+    Logger.debug("Starting planning agent",
+      task_id: state.task_id,
+      workspace: workspace_path,
+      title: agent_context.task.title
+    )
+
+    # Try to spawn planning agent
+    case Ipa.Agent.Supervisor.start_agent(state.task_id, Ipa.Agent.Types.Planning, agent_context) do
+      {:ok, agent_id} ->
+        case AgentCommands.start_agent(state, %{
+               agent_id: agent_id,
+               agent_type: :planning,
+               workspace_path: workspace_path
+             }) do
+          {:ok, events} ->
+            case persist_and_apply_events(state, events) do
+              {:ok, new_state} ->
+                broadcast_state_update(new_state)
+                new_state
+
+              _ ->
+                state
+            end
+
+          _ ->
+            state
+        end
+
+      {:error, reason} ->
+        Logger.error("Failed to start planning agent: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp execute_action(state, {:create_workstreams_from_plan, plan_workstreams}) do
+    Logger.info("Creating workstreams from plan",
+      task_id: state.task_id,
+      count: length(plan_workstreams)
+    )
+
+    # Create WorkstreamCreated events for each workstream in the plan
+    Enum.reduce(plan_workstreams, state, fn ws_data, acc_state ->
+      workstream_id = ws_data["id"] || ws_data[:id] || Ecto.UUID.generate()
+
+      params = %{
+        workstream_id: workstream_id,
+        title: ws_data["title"] || ws_data[:title],
+        spec: ws_data["description"] || ws_data[:description],
+        dependencies: ws_data["dependencies"] || ws_data[:dependencies] || [],
+        priority: :normal
+      }
+
+      case WorkstreamCommands.create_workstream(acc_state, params) do
+        {:ok, events} ->
+          case persist_and_apply_events(acc_state, events) do
+            {:ok, new_state} ->
+              broadcast_state_update(new_state)
+              new_state
+
+            _ ->
+              acc_state
+          end
+
+        {:error, reason} ->
+          Logger.warning("Failed to create workstream #{workstream_id}: #{inspect(reason)}")
+          acc_state
+      end
+    end)
+  end
+
+  defp execute_action(state, :noop), do: state
+
+  defp create_planning_workspace(task_id) do
+    # Use a temporary directory for planning agent workspace
+    base_path = Application.get_env(:ipa, :workspace_base_path, "/tmp/ipa/workspaces")
+    workspace_path = Path.join([base_path, task_id, "planning"])
+
+    case File.mkdir_p(workspace_path) do
+      :ok ->
+        Logger.debug("Created planning workspace", path: workspace_path)
+        workspace_path
+
+      {:error, reason} ->
+        # Fail explicitly rather than falling back to cwd (which would cause
+        # files to be created in project root)
+        raise "Failed to create planning workspace at #{workspace_path}: #{inspect(reason)}"
+    end
+  end
+
+  defp start_agent_for_workstream(state, context) do
+    case Ipa.Agent.Supervisor.start_agent(
+           state.task_id,
+           Ipa.Agent.Types.Workstream,
+           context
+         ) do
+      {:ok, agent_id} ->
+        case AgentCommands.start_agent(state, %{
+               agent_id: agent_id,
+               agent_type: :workstream,
+               workstream_id: context.workstream_id
+             }) do
+          {:ok, events} ->
+            case persist_and_apply_events(state, events) do
+              {:ok, new_state} -> {:ok, agent_id, new_state}
+              error -> error
+            end
+
+          error ->
+            error
+        end
+
+      error ->
+        error
+    end
+  end
+
+  defp find_workstream_for_agent(state, agent_id) do
+    case Enum.find(state.agents, fn a -> a.agent_id == agent_id end) do
+      nil -> nil
+      agent -> agent.workstream_id
+    end
+  end
+
+  defp schedule_evaluation(interval) do
+    Process.send_after(self(), :evaluate, interval)
+  end
+
+  defp broadcast_state_update(state) do
+    Phoenix.PubSub.broadcast(
+      Ipa.PubSub,
+      "pod:#{state.task_id}",
+      {:state_updated, state.task_id, state}
+    )
+  end
+
+  defp maybe_trigger_evaluation(events) do
+    trigger_types = [
+      Ipa.Pod.Events.SpecApproved,
+      Ipa.Pod.Events.PlanApproved,
+      Ipa.Pod.Events.TransitionApproved,
+      Ipa.Pod.Events.WorkstreamCompleted,
+      Ipa.Pod.Events.WorkstreamFailed,
+      Ipa.Pod.Events.AgentCompleted,
+      Ipa.Pod.Events.AgentFailed
+    ]
+
+    if Enum.any?(events, fn e -> e.__struct__ in trigger_types end) do
+      send(self(), :evaluate)
+    end
+  end
+
+  # Apply an external event (from EventStore broadcast) to state
+  defp apply_external_event(state, event) do
+    # Projector.apply handles raw events directly - it converts event_type + data to typed struct
+    Projector.apply(state, event)
+    # Note: Projector.apply already updates version and updated_at from the raw event
+  end
+
+  # Events that should trigger an evaluation after being applied
+  defp should_evaluate_after?(event_type) do
+    event_type in [
+      "spec_approved",
+      "plan_created",
+      "plan_updated",
+      "plan_approved",
+      "transition_approved",
+      "workstream_completed",
+      "workstream_failed",
+      "agent_completed",
+      "agent_failed"
+    ]
+  end
+end

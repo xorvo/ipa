@@ -17,8 +17,6 @@ defmodule Ipa.Pod.ExternalSync.GitHubConnector do
   @type repo :: String.t()
   @type pr_number :: integer()
 
-  @gh_timeout 30_000
-
   # ============================================================================
   # Public API
   # ============================================================================

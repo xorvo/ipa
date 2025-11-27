@@ -65,7 +65,8 @@ defmodule Ipa.MixProject do
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
       {:elixir_uuid, "~> 1.2"},
-      {:claude_code, "~> 0.4.0"}
+      {:claude_agent_sdk_ts, "~> 1.0"},
+      {:tidewave, "~> 0.5", only: :dev}
     ]
   end
 
@@ -78,6 +79,7 @@ defmodule Ipa.MixProject do
   defp aliases do
     [
       setup: ["deps.get", "ecto.setup", "assets.setup", "assets.build"],
+      reset: ["ecto.drop", "ecto.create", "ecto.migrate"],
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],

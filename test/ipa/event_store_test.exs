@@ -352,4 +352,85 @@ defmodule Ipa.EventStoreTest do
       assert state.approved_count == 2
     end
   end
+
+  describe "PubSub integration" do
+    test "broadcasts event_appended message when event is appended" do
+      {:ok, stream_id} = EventStore.start_stream("task")
+
+      # Subscribe to the stream's event broadcasts
+      EventStore.subscribe(stream_id)
+
+      # Append an event
+      {:ok, version} = EventStore.append(stream_id, "task_created", %{title: "Test Task"}, actor_id: "test-user")
+
+      # Should receive the broadcast
+      assert_receive {:event_appended, ^stream_id, event}, 1000
+      assert event.event_type == "task_created"
+      assert event.data.title == "Test Task"
+      assert event.version == version
+      assert event.actor_id == "test-user"
+    end
+
+    test "broadcasts event_appended for each event in batch" do
+      {:ok, stream_id} = EventStore.start_stream("task")
+
+      # Subscribe to the stream's event broadcasts
+      EventStore.subscribe(stream_id)
+
+      # Append batch of events
+      events = [
+        %{event_type: "task_created", data: %{title: "Test"}, opts: []},
+        %{event_type: "spec_updated", data: %{description: "A spec"}, opts: []},
+        %{event_type: "spec_approved", data: %{approved_by: "user"}, opts: []}
+      ]
+
+      {:ok, _version} = EventStore.append_batch(stream_id, events, actor_id: "test-user")
+
+      # Should receive broadcasts for all events
+      assert_receive {:event_appended, ^stream_id, event1}, 1000
+      assert event1.event_type == "task_created"
+      assert event1.version == 1
+
+      assert_receive {:event_appended, ^stream_id, event2}, 1000
+      assert event2.event_type == "spec_updated"
+      assert event2.version == 2
+
+      assert_receive {:event_appended, ^stream_id, event3}, 1000
+      assert event3.event_type == "spec_approved"
+      assert event3.version == 3
+    end
+
+    test "unsubscribe stops receiving broadcasts" do
+      {:ok, stream_id} = EventStore.start_stream("task")
+
+      # Subscribe then unsubscribe
+      EventStore.subscribe(stream_id)
+      EventStore.unsubscribe(stream_id)
+
+      # Append an event
+      EventStore.append(stream_id, "task_created", %{title: "Test Task"})
+
+      # Should NOT receive the broadcast
+      refute_receive {:event_appended, ^stream_id, _}, 100
+    end
+
+    test "subscribes are isolated per stream" do
+      {:ok, stream_1} = EventStore.start_stream("task")
+      {:ok, stream_2} = EventStore.start_stream("task")
+
+      # Subscribe only to stream_1
+      EventStore.subscribe(stream_1)
+
+      # Append events to both streams
+      EventStore.append(stream_1, "event_1", %{})
+      EventStore.append(stream_2, "event_2", %{})
+
+      # Should only receive event from stream_1
+      assert_receive {:event_appended, ^stream_1, event}, 1000
+      assert event.event_type == "event_1"
+
+      # Should NOT receive event from stream_2
+      refute_receive {:event_appended, ^stream_2, _}, 100
+    end
+  end
 end

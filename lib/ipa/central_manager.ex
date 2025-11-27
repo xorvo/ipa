@@ -14,7 +14,7 @@ defmodule Ipa.CentralManager do
   ## Architecture
 
   The CentralManager delegates pod supervision to `Ipa.PodSupervisor` (DynamicSupervisor)
-  and task state to `Ipa.Pod.State`. It provides a unified API for the Central Dashboard UI.
+  and task state to `Ipa.Pod.Manager`. It provides a unified API for the Central Dashboard UI.
 
   ## Examples
 

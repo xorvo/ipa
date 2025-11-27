@@ -43,11 +43,8 @@ defmodule Ipa.Pod.WorkspaceManager do
       # => Returns: {:ok, "/ipa/workspaces/task-123/agent-456"}
 
       # Agent spawns with workspace as cwd
-      {:ok, stream} = ClaudeCode.run_task(
-        prompt: "Complete task",
-        cwd: path,  # Agent works in workspace directory
-        allowed_tools: [:read, :write, :bash]
-      )
+      options = %Ipa.Agent.Options{cwd: path, allowed_tools: ["Read", "Write", "Bash"]}
+      messages = ClaudeAgentSdkTs.stream("Complete task", Ipa.Agent.Options.to_keyword_list(options), fn msg -> msg end) |> Enum.to_list()
 
       # Cleanup workspace after agent completes
       :ok = Ipa.Pod.WorkspaceManager.cleanup_workspace("task-123", "agent-456")
