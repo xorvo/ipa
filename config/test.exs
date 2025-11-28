@@ -22,7 +22,6 @@ config :ipa, IpaWeb.Endpoint,
 
 # In test we don't send emails
 
-
 # Print only warnings and errors during test
 config :logger, level: :warning
 

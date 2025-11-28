@@ -16,12 +16,13 @@ defmodule Ipa.Pod.ExternalSyncTest do
     {:ok, ^task_id} = EventStore.start_stream("task", task_id)
 
     # Add initial event
-    {:ok, _} = EventStore.append(
-      task_id,
-      "task_created",
-      %{title: "Test Task"},
-      actor_id: "test"
-    )
+    {:ok, _} =
+      EventStore.append(
+        task_id,
+        "task_created",
+        %{title: "Test Task"},
+        actor_id: "test"
+      )
 
     on_exit(fn ->
       # Cleanup
@@ -53,10 +54,11 @@ defmodule Ipa.Pod.ExternalSyncTest do
     test "starts with GitHub config", %{task_id: task_id} do
       {:ok, _pid} = PodSupervisor.start_pod(task_id)
 
-      {:ok, _pid} = ExternalSync.start_link(
-        task_id: task_id,
-        github: %{repo: "test/repo", base_branch: "develop"}
-      )
+      {:ok, _pid} =
+        ExternalSync.start_link(
+          task_id: task_id,
+          github: %{repo: "test/repo", base_branch: "develop"}
+        )
 
       {:ok, status} = ExternalSync.get_status(task_id)
       assert status.github.enabled == true

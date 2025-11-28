@@ -60,12 +60,13 @@ defmodule Ipa.CentralManager do
     task_id = generate_task_id()
 
     with {:ok, ^task_id} <- EventStore.start_stream("task", task_id),
-         {:ok, _version} <- EventStore.append(
-           task_id,
-           "task_created",
-           %{title: title, created_by: created_by},
-           actor_id: created_by
-         ) do
+         {:ok, _version} <-
+           EventStore.append(
+             task_id,
+             "task_created",
+             %{title: title, created_by: created_by},
+             actor_id: created_by
+           ) do
       Logger.info("Created task #{task_id}: #{title}")
       {:ok, task_id}
     else
@@ -291,7 +292,9 @@ defmodule Ipa.CentralManager do
 
           %{
             task_id: task_id,
-            title: get_in(task_created.data, [:title]) || get_in(task_created.data, ["title"]) || "Untitled",
+            title:
+              get_in(task_created.data, [:title]) || get_in(task_created.data, ["title"]) ||
+                "Untitled",
             phase: state.phase,
             pod_running: pod_running?(task_id),
             created_at: unix_to_datetime(task_created.inserted_at),
@@ -344,6 +347,7 @@ defmodule Ipa.CentralManager do
   end
 
   defp maybe_filter_completed(tasks, true), do: tasks
+
   defp maybe_filter_completed(tasks, false) do
     Enum.reject(tasks, & &1.completed)
   end
@@ -351,5 +355,6 @@ defmodule Ipa.CentralManager do
   defp unix_to_datetime(unix) when is_integer(unix) do
     DateTime.from_unix!(unix)
   end
+
   defp unix_to_datetime(_), do: DateTime.utc_now()
 end

@@ -37,6 +37,7 @@ defmodule Ipa.Pod.Event do
   @spec encode(struct()) :: %{event_type: String.t(), data: map()}
   def encode(event) do
     module = event.__struct__
+
     %{
       event_type: module.event_type(),
       data: module.to_map(event)
@@ -66,11 +67,18 @@ defmodule Ipa.Pod.Event do
   defp type_to_module("agent_completed"), do: Ipa.Pod.Events.AgentCompleted
   defp type_to_module("agent_failed"), do: Ipa.Pod.Events.AgentFailed
   defp type_to_module("agent_interrupted"), do: Ipa.Pod.Events.AgentInterrupted
+  defp type_to_module("agent_pending_start"), do: Ipa.Pod.Events.AgentPendingStart
+  defp type_to_module("agent_manually_started"), do: Ipa.Pod.Events.AgentManuallyStarted
+  defp type_to_module("agent_awaiting_input"), do: Ipa.Pod.Events.AgentAwaitingInput
+  defp type_to_module("agent_message_sent"), do: Ipa.Pod.Events.AgentMessageSent
+  defp type_to_module("agent_response_received"), do: Ipa.Pod.Events.AgentResponseReceived
+  defp type_to_module("agent_marked_done"), do: Ipa.Pod.Events.AgentMarkedDone
   defp type_to_module("workspace_created"), do: Ipa.Pod.Events.WorkspaceCreated
   defp type_to_module("workspace_cleanup"), do: Ipa.Pod.Events.WorkspaceCleanup
   defp type_to_module("workstream_agent_started"), do: Ipa.Pod.Events.WorkstreamAgentStarted
   defp type_to_module("task_completed"), do: Ipa.Pod.Events.TaskCompleted
-  defp type_to_module("phase_transitioned"), do: Ipa.Pod.Events.PhaseChanged  # alias to PhaseChanged
+  # alias to PhaseChanged
+  defp type_to_module("phase_transitioned"), do: Ipa.Pod.Events.PhaseChanged
   # Fallback for unknown events - just return the raw data wrapped
   defp type_to_module(unknown), do: raise("Unknown event type: #{unknown}")
 end

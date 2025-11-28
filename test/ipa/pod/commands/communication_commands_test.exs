@@ -88,7 +88,10 @@ defmodule Ipa.Pod.Commands.CommunicationCommandsTest do
       state = %State{task_id: "task-123", messages: %{}}
 
       assert {:error, :empty_content} =
-               CommunicationCommands.post_message(state, %{author: "user-1", message_type: :update})
+               CommunicationCommands.post_message(state, %{
+                 author: "user-1",
+                 message_type: :update
+               })
     end
 
     test "fails if thread_id doesn't exist" do

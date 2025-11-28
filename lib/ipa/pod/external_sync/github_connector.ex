@@ -56,12 +56,18 @@ defmodule Ipa.Pod.ExternalSync.GitHubConnector do
     draft = Keyword.get(opts, :draft, false)
 
     args = [
-      "pr", "create",
-      "--repo", repo,
-      "--title", title,
-      "--body", body,
-      "--head", head,
-      "--base", base
+      "pr",
+      "create",
+      "--repo",
+      repo,
+      "--title",
+      title,
+      "--body",
+      body,
+      "--head",
+      head,
+      "--base",
+      base
     ]
 
     args = if draft, do: args ++ ["--draft"], else: args
@@ -136,9 +142,13 @@ defmodule Ipa.Pod.ExternalSync.GitHubConnector do
   @spec get_pr(repo(), pr_number()) :: {:ok, map()} | {:error, term()}
   def get_pr(repo, pr_number) do
     args = [
-      "pr", "view", to_string(pr_number),
-      "--repo", repo,
-      "--json", "number,title,body,state,merged,mergeable,headRefName,baseRefName,url,createdAt,updatedAt"
+      "pr",
+      "view",
+      to_string(pr_number),
+      "--repo",
+      repo,
+      "--json",
+      "number,title,body,state,merged,mergeable,headRefName,baseRefName,url,createdAt,updatedAt"
     ]
 
     case run_gh(args) do
@@ -173,8 +183,11 @@ defmodule Ipa.Pod.ExternalSync.GitHubConnector do
   @spec merge_pr(repo(), pr_number(), String.t()) :: :ok | {:error, term()}
   def merge_pr(repo, pr_number, merge_method \\ "squash") do
     args = [
-      "pr", "merge", to_string(pr_number),
-      "--repo", repo,
+      "pr",
+      "merge",
+      to_string(pr_number),
+      "--repo",
+      repo,
       "--#{merge_method}",
       "--delete-branch"
     ]
@@ -224,9 +237,13 @@ defmodule Ipa.Pod.ExternalSync.GitHubConnector do
   @spec get_pr_comments(repo(), pr_number()) :: {:ok, [map()]} | {:error, term()}
   def get_pr_comments(repo, pr_number) do
     args = [
-      "pr", "view", to_string(pr_number),
-      "--repo", repo,
-      "--json", "comments"
+      "pr",
+      "view",
+      to_string(pr_number),
+      "--repo",
+      repo,
+      "--json",
+      "comments"
     ]
 
     case run_gh(args) do
@@ -255,9 +272,13 @@ defmodule Ipa.Pod.ExternalSync.GitHubConnector do
   @spec add_pr_comment(repo(), pr_number(), String.t()) :: :ok | {:error, term()}
   def add_pr_comment(repo, pr_number, body) do
     args = [
-      "pr", "comment", to_string(pr_number),
-      "--repo", repo,
-      "--body", body
+      "pr",
+      "comment",
+      to_string(pr_number),
+      "--repo",
+      repo,
+      "--body",
+      body
     ]
 
     case run_gh(args) do
@@ -287,11 +308,12 @@ defmodule Ipa.Pod.ExternalSync.GitHubConnector do
       {:ok, output} ->
         case Jason.decode(output, keys: :atoms) do
           {:ok, data} ->
-            {:ok, %{
-              remaining: data.remaining,
-              limit: data.limit,
-              reset_at: data.reset
-            }}
+            {:ok,
+             %{
+               remaining: data.remaining,
+               limit: data.limit,
+               reset_at: data.reset
+             }}
 
           {:error, _} ->
             {:error, :invalid_json}

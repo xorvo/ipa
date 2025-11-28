@@ -56,6 +56,7 @@ defmodule Ipa.Agent.StreamHandler do
   @spec classify(term()) :: classification()
   def classify(nil), do: :unknown
   def classify(message) when message == %{}, do: :unknown
+
   def classify(message) do
     # Handle claude_agent_sdk_ts message format
     # The new SDK returns messages with :type field directly
@@ -143,6 +144,7 @@ defmodule Ipa.Agent.StreamHandler do
   def extract_text(nil), do: ""
   def extract_text(text) when is_binary(text), do: text
   def extract_text([]), do: ""
+
   def extract_text(messages) when is_list(messages) do
     # Check if this is a list of content blocks (maps with type/text) or SDK messages
     first = List.first(messages)
@@ -150,7 +152,7 @@ defmodule Ipa.Agent.StreamHandler do
     cond do
       # Content block format (text/tool_use blocks)
       is_map(first) && (Map.has_key?(first, "type") || Map.has_key?(first, :type)) &&
-        !Map.has_key?(first, :data) ->
+          !Map.has_key?(first, :data) ->
         extract_text_from_content_blocks(messages)
 
       # SDK message format
@@ -360,6 +362,9 @@ defmodule Ipa.Agent.StreamHandler do
   # Helper to safely get field from struct or map without requiring Access behaviour
   defp get_field(nil, _key), do: nil
   defp get_field(struct, key) when is_struct(struct), do: Map.get(struct, key)
-  defp get_field(map, key) when is_map(map) and is_atom(key), do: map[key] || map[Atom.to_string(key)]
+
+  defp get_field(map, key) when is_map(map) and is_atom(key),
+    do: map[key] || map[Atom.to_string(key)]
+
   defp get_field(_, _), do: nil
 end

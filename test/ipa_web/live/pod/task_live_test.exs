@@ -26,45 +26,49 @@ defmodule IpaWeb.Pod.TaskLiveTest do
     {:ok, ^task_id} = EventStore.start_stream("task", task_id)
 
     # Task created event
-    {:ok, _} = EventStore.append(
-      task_id,
-      "task_created",
-      %{
-        title: "Test Task for LiveView",
-        description: "A test task to verify LiveView rendering"
-      },
-      actor_id: "test"
-    )
+    {:ok, _} =
+      EventStore.append(
+        task_id,
+        "task_created",
+        %{
+          title: "Test Task for LiveView",
+          description: "A test task to verify LiveView rendering"
+        },
+        actor_id: "test"
+      )
 
     # Spec updated event
-    {:ok, _} = EventStore.append(
-      task_id,
-      "spec_updated",
-      %{
-        spec: %{
-          description: "Test specification description",
-          requirements: ["Requirement 1", "Requirement 2"],
-          acceptance_criteria: ["Criteria 1"]
-        }
-      },
-      actor_id: "test"
-    )
+    {:ok, _} =
+      EventStore.append(
+        task_id,
+        "spec_updated",
+        %{
+          spec: %{
+            description: "Test specification description",
+            requirements: ["Requirement 1", "Requirement 2"],
+            acceptance_criteria: ["Criteria 1"]
+          }
+        },
+        actor_id: "test"
+      )
 
     # Spec approved event
-    {:ok, _} = EventStore.append(
-      task_id,
-      "spec_approved",
-      %{approved_by: "user", approved_at: System.system_time(:second)},
-      actor_id: "user"
-    )
+    {:ok, _} =
+      EventStore.append(
+        task_id,
+        "spec_approved",
+        %{approved_by: "user", approved_at: System.system_time(:second)},
+        actor_id: "user"
+      )
 
     # Phase transition to planning
-    {:ok, _} = EventStore.append(
-      task_id,
-      "phase_changed",
-      %{from_phase: "spec_clarification", to_phase: "planning"},
-      actor_id: "system"
-    )
+    {:ok, _} =
+      EventStore.append(
+        task_id,
+        "phase_changed",
+        %{from_phase: "spec_clarification", to_phase: "planning"},
+        actor_id: "system"
+      )
 
     on_exit(fn ->
       # Clean up after test
@@ -81,7 +85,8 @@ defmodule IpaWeb.Pod.TaskLiveTest do
       assert html =~ "Test Task for LiveView"
       assert html =~ task_id
       # Check for phase badge - default is spec_clarification when phase_changed not supported
-      assert html =~ "Spec clarification" or html =~ "spec_clarification" or html =~ "Planning" or html =~ "planning"
+      assert html =~ "Spec clarification" or html =~ "spec_clarification" or html =~ "Planning" or
+               html =~ "planning"
     end
 
     test "renders specification section", %{conn: conn, task_id: task_id} do
@@ -102,38 +107,44 @@ defmodule IpaWeb.Pod.TaskLiveTest do
   describe "workstreams tab rendering" do
     setup %{task_id: task_id} do
       # Add workstreams without :title key (the bug case)
-      {:ok, _} = EventStore.append(
-        task_id,
-        "workstream_created",
-        %{
-          workstream_id: "ws-1",
-          spec: "First workstream specification",
-          dependencies: []
-        },
-        actor_id: "scheduler"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workstream_created",
+          %{
+            workstream_id: "ws-1",
+            spec: "First workstream specification",
+            dependencies: []
+          },
+          actor_id: "scheduler"
+        )
 
-      {:ok, _} = EventStore.append(
-        task_id,
-        "workstream_created",
-        %{
-          workstream_id: "ws-2",
-          spec: "Second workstream with dependency",
-          dependencies: ["ws-1"]
-        },
-        actor_id: "scheduler"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workstream_created",
+          %{
+            workstream_id: "ws-2",
+            spec: "Second workstream with dependency",
+            dependencies: ["ws-1"]
+          },
+          actor_id: "scheduler"
+        )
 
       :ok
     end
 
-    test "renders workstreams tab without crash when workstreams lack :title key", %{conn: conn, task_id: task_id} do
+    test "renders workstreams tab without crash when workstreams lack :title key", %{
+      conn: conn,
+      task_id: task_id
+    } do
       {:ok, view, _html} = live(conn, ~p"/pods/#{task_id}")
 
       # Click on Workstreams tab - this should NOT crash
-      html = view
-             |> element("button", "Workstreams")
-             |> render_click()
+      html =
+        view
+        |> element("button", "Workstreams")
+        |> render_click()
 
       # Should render workstream IDs as titles (fallback)
       assert html =~ "ws-1"
@@ -146,9 +157,10 @@ defmodule IpaWeb.Pod.TaskLiveTest do
     test "renders workstream dependencies correctly", %{conn: conn, task_id: task_id} do
       {:ok, view, _html} = live(conn, ~p"/pods/#{task_id}")
 
-      html = view
-             |> element("button", "Workstreams")
-             |> render_click()
+      html =
+        view
+        |> element("button", "Workstreams")
+        |> render_click()
 
       # ws-2 depends on ws-1
       assert html =~ "Depends on: ws-1"
@@ -157,9 +169,10 @@ defmodule IpaWeb.Pod.TaskLiveTest do
     test "renders workstream status badges", %{conn: conn, task_id: task_id} do
       {:ok, view, _html} = live(conn, ~p"/pods/#{task_id}")
 
-      html = view
-             |> element("button", "Workstreams")
-             |> render_click()
+      html =
+        view
+        |> element("button", "Workstreams")
+        |> render_click()
 
       # Default status should be pending
       assert html =~ "Pending"
@@ -168,23 +181,25 @@ defmodule IpaWeb.Pod.TaskLiveTest do
     test "handles workstreams with :title key", %{conn: conn, task_id: task_id} do
       # Add a workstream WITH a title - note: title may not be projected by state,
       # so we test that it renders without crash and shows the workstream_id as fallback
-      {:ok, _} = EventStore.append(
-        task_id,
-        "workstream_created",
-        %{
-          workstream_id: "ws-3",
-          title: "Custom Workstream Title",
-          spec: "Third workstream",
-          dependencies: []
-        },
-        actor_id: "scheduler"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workstream_created",
+          %{
+            workstream_id: "ws-3",
+            title: "Custom Workstream Title",
+            spec: "Third workstream",
+            dependencies: []
+          },
+          actor_id: "scheduler"
+        )
 
       {:ok, view, _html} = live(conn, ~p"/pods/#{task_id}")
 
-      html = view
-             |> element("button", "Workstreams")
-             |> render_click()
+      html =
+        view
+        |> element("button", "Workstreams")
+        |> render_click()
 
       # Should render - either custom title or workstream_id as fallback
       # The key test is that it renders without crashing
@@ -196,20 +211,25 @@ defmodule IpaWeb.Pod.TaskLiveTest do
   describe "workstreams empty state" do
     test "renders empty state when no workstreams exist", %{conn: conn} do
       # Create a new task without workstreams
-      task_id = "no-workstreams-task-#{System.system_time(:millisecond)}-#{:rand.uniform(100_000)}"
+      task_id =
+        "no-workstreams-task-#{System.system_time(:millisecond)}-#{:rand.uniform(100_000)}"
+
       {:ok, ^task_id} = EventStore.start_stream("task", task_id)
-      {:ok, _} = EventStore.append(
-        task_id,
-        "task_created",
-        %{title: "Empty Task", description: "No workstreams"},
-        actor_id: "test"
-      )
+
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "task_created",
+          %{title: "Empty Task", description: "No workstreams"},
+          actor_id: "test"
+        )
 
       {:ok, view, _html} = live(conn, ~p"/pods/#{task_id}")
 
-      html = view
-             |> element("button", "Workstreams")
-             |> render_click()
+      html =
+        view
+        |> element("button", "Workstreams")
+        |> render_click()
 
       assert html =~ "No workstreams yet"
 
@@ -224,54 +244,58 @@ defmodule IpaWeb.Pod.TaskLiveTest do
       agent_id = "workstream-agent-ws-details-test"
       workspace_path = "/tmp/test-workspace/#{task_id}/#{agent_id}"
 
-      {:ok, _} = EventStore.append(
-        task_id,
-        "workstream_created",
-        %{
-          workstream_id: "ws-details-1",
-          spec: "Workstream for details panel test",
-          dependencies: []
-        },
-        actor_id: "scheduler"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workstream_created",
+          %{
+            workstream_id: "ws-details-1",
+            spec: "Workstream for details panel test",
+            dependencies: []
+          },
+          actor_id: "scheduler"
+        )
 
       # Add workspace_created event (fires before agent_started)
-      {:ok, _} = EventStore.append(
-        task_id,
-        "workspace_created",
-        %{
-          agent_id: agent_id,
-          workspace_path: workspace_path
-        },
-        actor_id: "workspace_manager"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workspace_created",
+          %{
+            agent_id: agent_id,
+            workspace_path: workspace_path
+          },
+          actor_id: "workspace_manager"
+        )
 
       # Add workstream_agent_started event with workspace
-      {:ok, _} = EventStore.append(
-        task_id,
-        "workstream_agent_started",
-        %{
-          workstream_id: "ws-details-1",
-          agent_id: agent_id,
-          agent_type: "workstream_executor",
-          workspace_path: workspace_path
-        },
-        actor_id: "scheduler"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workstream_agent_started",
+          %{
+            workstream_id: "ws-details-1",
+            agent_id: agent_id,
+            agent_type: "workstream_executor",
+            workspace_path: workspace_path
+          },
+          actor_id: "scheduler"
+        )
 
       # Add agent_started event to populate state.agents
-      {:ok, _} = EventStore.append(
-        task_id,
-        "agent_started",
-        %{
-          task_id: task_id,
-          agent_id: agent_id,
-          agent_type: "workstream_executor",
-          workstream_id: "ws-details-1",
-          workspace: workspace_path
-        },
-        actor_id: "scheduler"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "agent_started",
+          %{
+            task_id: task_id,
+            agent_id: agent_id,
+            agent_type: "workstream_executor",
+            workstream_id: "ws-details-1",
+            workspace: workspace_path
+          },
+          actor_id: "scheduler"
+        )
 
       %{agent_id: agent_id, workspace_path: workspace_path}
     end
@@ -285,9 +309,10 @@ defmodule IpaWeb.Pod.TaskLiveTest do
       |> render_click()
 
       # Click on the workstream card to select it
-      html = view
-             |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-details-1\"]")
-             |> render_click()
+      html =
+        view
+        |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-details-1\"]")
+        |> render_click()
 
       # Details panel should appear
       assert html =~ "Workstream Details"
@@ -299,22 +324,30 @@ defmodule IpaWeb.Pod.TaskLiveTest do
 
       # Navigate to workstreams and select one
       view |> element("button", "Workstreams") |> render_click()
-      html = view
-             |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-details-1\"]")
-             |> render_click()
+
+      html =
+        view
+        |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-details-1\"]")
+        |> render_click()
 
       assert html =~ "Specification"
       assert html =~ "Workstream for details panel test"
     end
 
-    test "details panel shows workspace path with copy button", %{conn: conn, task_id: task_id, workspace_path: workspace_path} do
+    test "details panel shows workspace path with copy button", %{
+      conn: conn,
+      task_id: task_id,
+      workspace_path: workspace_path
+    } do
       {:ok, view, _html} = live(conn, ~p"/pods/#{task_id}")
 
       # Navigate to workstreams and select one
       view |> element("button", "Workstreams") |> render_click()
-      html = view
-             |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-details-1\"]")
-             |> render_click()
+
+      html =
+        view
+        |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-details-1\"]")
+        |> render_click()
 
       # Should show workspace section with path
       assert html =~ "Workspace"
@@ -323,14 +356,20 @@ defmodule IpaWeb.Pod.TaskLiveTest do
       assert html =~ "Copy path"
     end
 
-    test "details panel shows agent information", %{conn: conn, task_id: task_id, agent_id: agent_id} do
+    test "details panel shows agent information", %{
+      conn: conn,
+      task_id: task_id,
+      agent_id: agent_id
+    } do
       {:ok, view, _html} = live(conn, ~p"/pods/#{task_id}")
 
       # Navigate to workstreams and select one
       view |> element("button", "Workstreams") |> render_click()
-      html = view
-             |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-details-1\"]")
-             |> render_click()
+
+      html =
+        view
+        |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-details-1\"]")
+        |> render_click()
 
       # Should show agent section
       assert html =~ "Agent"
@@ -345,9 +384,11 @@ defmodule IpaWeb.Pod.TaskLiveTest do
 
       # Navigate to workstreams and select one
       view |> element("button", "Workstreams") |> render_click()
-      html = view
-             |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-details-1\"]")
-             |> render_click()
+
+      html =
+        view
+        |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-details-1\"]")
+        |> render_click()
 
       # Status should show after workstream_agent_started event
       # Note: The actual status may be "In progress" or "Failed" depending on whether
@@ -363,9 +404,11 @@ defmodule IpaWeb.Pod.TaskLiveTest do
 
       # Navigate to workstreams and select one
       view |> element("button", "Workstreams") |> render_click()
-      html = view
-             |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-details-1\"]")
-             |> render_click()
+
+      html =
+        view
+        |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-details-1\"]")
+        |> render_click()
 
       assert html =~ "Dependencies"
       # ws-details-1 has no dependencies
@@ -377,9 +420,11 @@ defmodule IpaWeb.Pod.TaskLiveTest do
 
       # Navigate to workstreams and select one
       view |> element("button", "Workstreams") |> render_click()
-      html = view
-             |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-details-1\"]")
-             |> render_click()
+
+      html =
+        view
+        |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-details-1\"]")
+        |> render_click()
 
       assert html =~ "Timeline"
       assert html =~ "Started:"
@@ -390,14 +435,16 @@ defmodule IpaWeb.Pod.TaskLiveTest do
 
       # Navigate to workstreams and select one
       view |> element("button", "Workstreams") |> render_click()
+
       view
       |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-details-1\"]")
       |> render_click()
 
       # Click close button (empty id deselects)
-      html = view
-             |> element("[phx-click=\"select_workstream\"][phx-value-id=\"\"]")
-             |> render_click()
+      html =
+        view
+        |> element("[phx-click=\"select_workstream\"][phx-value-id=\"\"]")
+        |> render_click()
 
       # Details panel should be gone - check for the heading tag specifically
       # (HTML comments might still contain the text)
@@ -410,26 +457,32 @@ defmodule IpaWeb.Pod.TaskLiveTest do
       # Create task with workstream but no workspace
       task_id = "no-workspace-task-#{System.system_time(:millisecond)}-#{:rand.uniform(100_000)}"
       {:ok, ^task_id} = EventStore.start_stream("task", task_id)
-      {:ok, _} = EventStore.append(
-        task_id,
-        "task_created",
-        %{title: "Task without workspace"},
-        actor_id: "test"
-      )
-      {:ok, _} = EventStore.append(
-        task_id,
-        "workstream_created",
-        %{workstream_id: "ws-no-workspace", spec: "Test spec", dependencies: []},
-        actor_id: "scheduler"
-      )
+
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "task_created",
+          %{title: "Task without workspace"},
+          actor_id: "test"
+        )
+
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workstream_created",
+          %{workstream_id: "ws-no-workspace", spec: "Test spec", dependencies: []},
+          actor_id: "scheduler"
+        )
 
       {:ok, view, _html} = live(conn, ~p"/pods/#{task_id}")
 
       # Navigate to workstreams and select one
       view |> element("button", "Workstreams") |> render_click()
-      html = view
-             |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-no-workspace\"]")
-             |> render_click()
+
+      html =
+        view
+        |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-no-workspace\"]")
+        |> render_click()
 
       # Should show "No workspace created yet"
       assert html =~ "No workspace created yet"
@@ -442,26 +495,32 @@ defmodule IpaWeb.Pod.TaskLiveTest do
       # Create task with workstream but no agent
       task_id = "no-agent-task-#{System.system_time(:millisecond)}-#{:rand.uniform(100_000)}"
       {:ok, ^task_id} = EventStore.start_stream("task", task_id)
-      {:ok, _} = EventStore.append(
-        task_id,
-        "task_created",
-        %{title: "Task without agent"},
-        actor_id: "test"
-      )
-      {:ok, _} = EventStore.append(
-        task_id,
-        "workstream_created",
-        %{workstream_id: "ws-no-agent", spec: "Test spec", dependencies: []},
-        actor_id: "scheduler"
-      )
+
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "task_created",
+          %{title: "Task without agent"},
+          actor_id: "test"
+        )
+
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workstream_created",
+          %{workstream_id: "ws-no-agent", spec: "Test spec", dependencies: []},
+          actor_id: "scheduler"
+        )
 
       {:ok, view, _html} = live(conn, ~p"/pods/#{task_id}")
 
       # Navigate to workstreams and select one
       view |> element("button", "Workstreams") |> render_click()
-      html = view
-             |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-no-agent\"]")
-             |> render_click()
+
+      html =
+        view
+        |> element("[phx-click=\"select_workstream\"][phx-value-id=\"ws-no-agent\"]")
+        |> render_click()
 
       # Should show "No agent assigned yet"
       assert html =~ "No agent assigned yet"
@@ -474,31 +533,33 @@ defmodule IpaWeb.Pod.TaskLiveTest do
   describe "communications tab rendering" do
     setup %{task_id: task_id} do
       # Add some messages
-      {:ok, _} = EventStore.append(
-        task_id,
-        "message_posted",
-        %{
-          message_id: "msg-1",
-          type: :update,
-          content: "Test update message",
-          author: "agent-1",
-          posted_at: System.system_time(:second)
-        },
-        actor_id: "agent-1"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "message_posted",
+          %{
+            message_id: "msg-1",
+            type: :update,
+            content: "Test update message",
+            author: "agent-1",
+            posted_at: System.system_time(:second)
+          },
+          actor_id: "agent-1"
+        )
 
-      {:ok, _} = EventStore.append(
-        task_id,
-        "message_posted",
-        %{
-          message_id: "msg-2",
-          type: :question,
-          content: "Test question message?",
-          author: "user",
-          posted_at: System.system_time(:second)
-        },
-        actor_id: "user"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "message_posted",
+          %{
+            message_id: "msg-2",
+            type: :question,
+            content: "Test question message?",
+            author: "user",
+            posted_at: System.system_time(:second)
+          },
+          actor_id: "user"
+        )
 
       :ok
     end
@@ -507,9 +568,10 @@ defmodule IpaWeb.Pod.TaskLiveTest do
       {:ok, view, _html} = live(conn, ~p"/pods/#{task_id}")
 
       # Click on Communications tab - should NOT crash
-      html = view
-             |> element("button", "Communications")
-             |> render_click()
+      html =
+        view
+        |> element("button", "Communications")
+        |> render_click()
 
       assert html =~ "Messages"
       assert html =~ "Inbox"
@@ -518,9 +580,10 @@ defmodule IpaWeb.Pod.TaskLiveTest do
     test "renders messages in communications tab", %{conn: conn, task_id: task_id} do
       {:ok, view, _html} = live(conn, ~p"/pods/#{task_id}")
 
-      html = view
-             |> element("button", "Communications")
-             |> render_click()
+      html =
+        view
+        |> element("button", "Communications")
+        |> render_click()
 
       assert html =~ "Test update message"
       assert html =~ "Test question message?"
@@ -532,18 +595,21 @@ defmodule IpaWeb.Pod.TaskLiveTest do
       # Create a new task without messages
       task_id = "no-messages-task-#{System.system_time(:millisecond)}-#{:rand.uniform(100_000)}"
       {:ok, ^task_id} = EventStore.start_stream("task", task_id)
-      {:ok, _} = EventStore.append(
-        task_id,
-        "task_created",
-        %{title: "Empty Messages Task", description: "No messages"},
-        actor_id: "test"
-      )
+
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "task_created",
+          %{title: "Empty Messages Task", description: "No messages"},
+          actor_id: "test"
+        )
 
       {:ok, view, _html} = live(conn, ~p"/pods/#{task_id}")
 
-      html = view
-             |> element("button", "Communications")
-             |> render_click()
+      html =
+        view
+        |> element("button", "Communications")
+        |> render_click()
 
       assert html =~ "No messages yet"
 
@@ -560,21 +626,27 @@ defmodule IpaWeb.Pod.TaskLiveTest do
       assert html =~ "Specification"
 
       # Switch to Workstreams
-      html = view
-             |> element("button", "Workstreams")
-             |> render_click()
+      html =
+        view
+        |> element("button", "Workstreams")
+        |> render_click()
+
       refute html =~ "Specification"
 
       # Switch to Communications
-      html = view
-             |> element("button", "Communications")
-             |> render_click()
+      html =
+        view
+        |> element("button", "Communications")
+        |> render_click()
+
       assert html =~ "Messages"
 
       # Switch back to Overview
-      html = view
-             |> element("button", "Overview")
-             |> render_click()
+      html =
+        view
+        |> element("button", "Overview")
+        |> render_click()
+
       assert html =~ "Specification"
     end
   end
@@ -582,20 +654,26 @@ defmodule IpaWeb.Pod.TaskLiveTest do
   describe "spec approval workflow" do
     test "can approve spec when not already approved", %{conn: conn} do
       # Create task without spec approval
-      task_id = "unapproved-spec-task-#{System.system_time(:millisecond)}-#{:rand.uniform(100_000)}"
+      task_id =
+        "unapproved-spec-task-#{System.system_time(:millisecond)}-#{:rand.uniform(100_000)}"
+
       {:ok, ^task_id} = EventStore.start_stream("task", task_id)
-      {:ok, _} = EventStore.append(
-        task_id,
-        "task_created",
-        %{title: "Unapproved Spec Task", description: "Needs approval"},
-        actor_id: "test"
-      )
-      {:ok, _} = EventStore.append(
-        task_id,
-        "spec_updated",
-        %{spec: %{description: "Spec needing approval", requirements: []}},
-        actor_id: "test"
-      )
+
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "task_created",
+          %{title: "Unapproved Spec Task", description: "Needs approval"},
+          actor_id: "test"
+        )
+
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "spec_updated",
+          %{spec: %{description: "Spec needing approval", requirements: []}},
+          actor_id: "test"
+        )
 
       # Allow dynamically started pod processes to access the sandbox
       # This is necessary because the refactored TaskLive now routes events through
@@ -631,19 +709,22 @@ defmodule IpaWeb.Pod.TaskLiveTest do
   describe "error handling" do
     test "redirects to home when task not found", %{conn: conn} do
       # LiveView uses live_redirect for navigation with flash message
-      {:error, {:live_redirect, %{to: "/", flash: _flash}}} = live(conn, ~p"/pods/nonexistent-task-id")
+      {:error, {:live_redirect, %{to: "/", flash: _flash}}} =
+        live(conn, ~p"/pods/nonexistent-task-id")
     end
 
     test "handles missing optional fields gracefully", %{conn: conn} do
       # Create minimal task
       task_id = "minimal-task-#{System.system_time(:millisecond)}-#{:rand.uniform(100_000)}"
       {:ok, ^task_id} = EventStore.start_stream("task", task_id)
-      {:ok, _} = EventStore.append(
-        task_id,
-        "task_created",
-        %{title: "Minimal Task"},
-        actor_id: "test"
-      )
+
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "task_created",
+          %{title: "Minimal Task"},
+          actor_id: "test"
+        )
 
       # Should render without crashing even with minimal data
       {:ok, _view, html} = live(conn, ~p"/pods/#{task_id}")

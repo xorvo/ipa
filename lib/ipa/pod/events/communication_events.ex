@@ -48,7 +48,8 @@ defmodule Ipa.Pod.Events.MessagePosted do
       message_id: get_field(data, :message_id),
       author: get_field(data, :author),
       content: get_field(data, :content),
-      message_type: normalize_message_type(get_field(data, :message_type) || get_field(data, :type)),
+      message_type:
+        normalize_message_type(get_field(data, :message_type) || get_field(data, :type)),
       thread_id: get_field(data, :thread_id),
       workstream_id: get_field(data, :workstream_id)
     }
@@ -179,7 +180,8 @@ defmodule Ipa.Pod.Events.NotificationCreated do
     :preview
   ]
 
-  @type notification_type :: :needs_approval | :question_asked | :blocker_raised | :workstream_completed
+  @type notification_type ::
+          :needs_approval | :question_asked | :blocker_raised | :workstream_completed
 
   @type t :: %__MODULE__{
           task_id: String.t(),
@@ -211,7 +213,8 @@ defmodule Ipa.Pod.Events.NotificationCreated do
       task_id: get_field(data, :task_id),
       notification_id: get_field(data, :notification_id),
       recipient: get_field(data, :recipient),
-      notification_type: normalize_notification_type(get_field(data, :notification_type) || get_field(data, :type)),
+      notification_type:
+        normalize_notification_type(get_field(data, :notification_type) || get_field(data, :type)),
       message_id: get_field(data, :message_id),
       preview: get_field(data, :preview) || get_field(data, :message_preview)
     }

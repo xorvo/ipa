@@ -12,7 +12,8 @@ defmodule Ipa.PodSupervisorTest do
     {:ok, ^task_id} = EventStore.start_stream("task", task_id)
 
     # Append initial task_created event (required by Pod.Manager)
-    {:ok, _} = EventStore.append(task_id, "task_created", %{title: "Test Task"}, actor_id: "system")
+    {:ok, _} =
+      EventStore.append(task_id, "task_created", %{title: "Test Task"}, actor_id: "system")
 
     # Ensure pod is stopped after each test
     on_exit(fn ->
@@ -219,8 +220,12 @@ defmodule Ipa.PodSupervisorTest do
 
       {:ok, task_id1} = EventStore.start_stream("task", task_id1)
       {:ok, task_id2} = EventStore.start_stream("task", task_id2)
-      {:ok, _} = EventStore.append(task_id1, "task_created", %{title: "List 1"}, actor_id: "system")
-      {:ok, _} = EventStore.append(task_id2, "task_created", %{title: "List 2"}, actor_id: "system")
+
+      {:ok, _} =
+        EventStore.append(task_id1, "task_created", %{title: "List 1"}, actor_id: "system")
+
+      {:ok, _} =
+        EventStore.append(task_id2, "task_created", %{title: "List 2"}, actor_id: "system")
 
       {:ok, _} = PodSupervisor.start_pod(task_id1)
       {:ok, _} = PodSupervisor.start_pod(task_id2)
@@ -239,7 +244,10 @@ defmodule Ipa.PodSupervisorTest do
     test "returns pod metadata" do
       task_id = "test-metadata-#{:rand.uniform(1_000_000)}"
       {:ok, task_id} = EventStore.start_stream("task", task_id)
-      {:ok, _} = EventStore.append(task_id, "task_created", %{title: "Metadata Test"}, actor_id: "system")
+
+      {:ok, _} =
+        EventStore.append(task_id, "task_created", %{title: "Metadata Test"}, actor_id: "system")
+
       {:ok, _} = PodSupervisor.start_pod(task_id)
 
       pods = PodSupervisor.list_pods()
@@ -263,8 +271,12 @@ defmodule Ipa.PodSupervisorTest do
 
       {:ok, task_id1} = EventStore.start_stream("task", task_id1)
       {:ok, task_id2} = EventStore.start_stream("task", task_id2)
-      {:ok, _} = EventStore.append(task_id1, "task_created", %{title: "Count 1"}, actor_id: "system")
-      {:ok, _} = EventStore.append(task_id2, "task_created", %{title: "Count 2"}, actor_id: "system")
+
+      {:ok, _} =
+        EventStore.append(task_id1, "task_created", %{title: "Count 1"}, actor_id: "system")
+
+      {:ok, _} =
+        EventStore.append(task_id2, "task_created", %{title: "Count 2"}, actor_id: "system")
 
       {:ok, _} = PodSupervisor.start_pod(task_id1)
       {:ok, _} = PodSupervisor.start_pod(task_id2)
@@ -286,7 +298,10 @@ defmodule Ipa.PodSupervisorTest do
         Enum.map(1..5, fn i ->
           task_id = "test-multi-#{i}-#{:rand.uniform(1_000_000)}"
           {:ok, task_id} = EventStore.start_stream("task", task_id)
-          {:ok, _} = EventStore.append(task_id, "task_created", %{title: "Multi #{i}"}, actor_id: "system")
+
+          {:ok, _} =
+            EventStore.append(task_id, "task_created", %{title: "Multi #{i}"}, actor_id: "system")
+
           task_id
         end)
 
@@ -313,8 +328,11 @@ defmodule Ipa.PodSupervisorTest do
       {:ok, task_id2} = EventStore.start_stream("task", task_id2)
 
       # Append task_created events (required by Pod.Manager)
-      {:ok, _} = EventStore.append(task_id1, "task_created", %{title: "Test 1"}, actor_id: "system")
-      {:ok, _} = EventStore.append(task_id2, "task_created", %{title: "Test 2"}, actor_id: "system")
+      {:ok, _} =
+        EventStore.append(task_id1, "task_created", %{title: "Test 1"}, actor_id: "system")
+
+      {:ok, _} =
+        EventStore.append(task_id2, "task_created", %{title: "Test 2"}, actor_id: "system")
 
       {:ok, _pid1} = PodSupervisor.start_pod(task_id1)
       {:ok, pid2} = PodSupervisor.start_pod(task_id2)
@@ -336,7 +354,9 @@ defmodule Ipa.PodSupervisorTest do
     test "prevents duplicate pods from concurrent starts" do
       task_id = "test-race-#{:rand.uniform(1_000_000)}"
       {:ok, task_id} = EventStore.start_stream("task", task_id)
-      {:ok, _} = EventStore.append(task_id, "task_created", %{title: "Race Test"}, actor_id: "system")
+
+      {:ok, _} =
+        EventStore.append(task_id, "task_created", %{title: "Race Test"}, actor_id: "system")
 
       # Try to start the same pod concurrently
       tasks =
@@ -364,7 +384,9 @@ defmodule Ipa.PodSupervisorTest do
     test "pod terminates cleanly" do
       task_id = "test-shutdown-#{:rand.uniform(1_000_000)}"
       {:ok, task_id} = EventStore.start_stream("task", task_id)
-      {:ok, _} = EventStore.append(task_id, "task_created", %{title: "Shutdown Test"}, actor_id: "system")
+
+      {:ok, _} =
+        EventStore.append(task_id, "task_created", %{title: "Shutdown Test"}, actor_id: "system")
 
       {:ok, pid} = PodSupervisor.start_pod(task_id)
       ref = Process.monitor(pid)

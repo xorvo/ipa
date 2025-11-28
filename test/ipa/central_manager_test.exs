@@ -180,19 +180,21 @@ defmodule Ipa.CentralManagerTest do
       {:ok, task_id} = CentralManager.create_task("Task with Workstreams", "user-123")
 
       # Add workstream events
-      {:ok, _} = EventStore.append(
-        task_id,
-        "workstream_created",
-        %{workstream_id: "ws-1", title: "Workstream 1"},
-        actor_id: "scheduler"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workstream_created",
+          %{workstream_id: "ws-1", title: "Workstream 1"},
+          actor_id: "scheduler"
+        )
 
-      {:ok, _} = EventStore.append(
-        task_id,
-        "workstream_created",
-        %{workstream_id: "ws-2", title: "Workstream 2"},
-        actor_id: "scheduler"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workstream_created",
+          %{workstream_id: "ws-2", title: "Workstream 2"},
+          actor_id: "scheduler"
+        )
 
       tasks = CentralManager.list_tasks()
       task = Enum.find(tasks, &(&1.task_id == task_id))
@@ -204,12 +206,13 @@ defmodule Ipa.CentralManagerTest do
       {:ok, task_id} = CentralManager.create_task("Completed Task", "user-123")
 
       # Mark task as completed
-      {:ok, _} = EventStore.append(
-        task_id,
-        "task_completed",
-        %{completed_at: System.system_time(:second)},
-        actor_id: "user-123"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "task_completed",
+          %{completed_at: System.system_time(:second)},
+          actor_id: "user-123"
+        )
 
       tasks = CentralManager.list_tasks()
       task = Enum.find(tasks, &(&1.task_id == task_id))
@@ -220,12 +223,13 @@ defmodule Ipa.CentralManagerTest do
     test "includes completed tasks when option set" do
       {:ok, task_id} = CentralManager.create_task("Completed Task", "user-123")
 
-      {:ok, _} = EventStore.append(
-        task_id,
-        "task_completed",
-        %{completed_at: System.system_time(:second)},
-        actor_id: "user-123"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "task_completed",
+          %{completed_at: System.system_time(:second)},
+          actor_id: "user-123"
+        )
 
       tasks = CentralManager.list_tasks(include_completed: true)
       task = Enum.find(tasks, &(&1.task_id == task_id))
@@ -280,12 +284,13 @@ defmodule Ipa.CentralManagerTest do
       {:ok, task_id} = CentralManager.create_task("Phase Test", "user-123")
 
       # Transition to planning
-      {:ok, _} = EventStore.append(
-        task_id,
-        "transition_approved",
-        %{from_phase: "spec_clarification", to_phase: "planning", approved_by: "user-123"},
-        actor_id: "user-123"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "transition_approved",
+          %{from_phase: "spec_clarification", to_phase: "planning", approved_by: "user-123"},
+          actor_id: "user-123"
+        )
 
       tasks = CentralManager.list_tasks()
       task = Enum.find(tasks, &(&1.task_id == task_id))

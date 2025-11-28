@@ -57,9 +57,13 @@ defmodule IpaWeb.Live.Components.AgentPanel do
       # Initialize streaming_outputs with persisted output for completed agents
       # This ensures output is visible when the component loads
       existing_outputs = socket.assigns[:streaming_outputs] || %{}
+
       new_outputs =
         agents
-        |> Enum.filter(fn a -> a.status in [:completed, :failed] && a.output && not Map.has_key?(existing_outputs, a.agent_id) end)
+        |> Enum.filter(fn a ->
+          a.status in [:completed, :failed] && a.output &&
+            not Map.has_key?(existing_outputs, a.agent_id)
+        end)
         |> Enum.map(fn a -> {a.agent_id, a.output} end)
         |> Map.new()
 
@@ -73,7 +77,9 @@ defmodule IpaWeb.Live.Components.AgentPanel do
   @impl true
   def render(assigns) do
     running_agents = Enum.filter(assigns.agents || [], &(&1.status == :running))
-    completed_agents = Enum.filter(assigns.agents || [], &(&1.status in [:completed, :failed, :interrupted]))
+
+    completed_agents =
+      Enum.filter(assigns.agents || [], &(&1.status in [:completed, :failed, :interrupted]))
 
     assigns =
       assigns
@@ -96,11 +102,11 @@ defmodule IpaWeb.Live.Components.AgentPanel do
           <%= if length(@running_agents) > 0 do %>
             <span class="badge badge-info gap-1">
               <span class="w-2 h-2 bg-info-content rounded-full animate-pulse"></span>
-              <%= length(@running_agents) %> running
+              {length(@running_agents)} running
             </span>
           <% end %>
           <%= if length(@completed_agents) > 0 do %>
-            <span class="badge badge-ghost"><%= length(@completed_agents) %> completed</span>
+            <span class="badge badge-ghost">{length(@completed_agents)} completed</span>
           <% end %>
         </div>
       </div>
@@ -123,8 +129,7 @@ defmodule IpaWeb.Live.Components.AgentPanel do
         <%= if length(@running_agents) > 0 do %>
           <div class="space-y-4">
             <h4 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider flex items-center gap-2">
-              <span class="w-2 h-2 bg-info rounded-full animate-pulse"></span>
-              Running
+              <span class="w-2 h-2 bg-info rounded-full animate-pulse"></span> Running
             </h4>
             <%= for agent <- @running_agents do %>
               <.agent_card
@@ -136,8 +141,8 @@ defmodule IpaWeb.Live.Components.AgentPanel do
             <% end %>
           </div>
         <% end %>
-
-        <!-- Completed agents (collapsed by default) -->
+        
+    <!-- Completed agents (collapsed by default) -->
         <%= if length(@completed_agents) > 0 do %>
           <div class="space-y-3">
             <h4 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider">
@@ -283,14 +288,14 @@ defmodule IpaWeb.Live.Components.AgentPanel do
             <.agent_status_indicator status={@agent.status} />
             <div>
               <div class="flex items-center gap-2">
-                <span class="font-semibold text-base"><%= format_agent_type(@agent.agent_type) %></span>
+                <span class="font-semibold text-base">{format_agent_type(@agent.agent_type)}</span>
                 <%= if @is_running do %>
                   <span class="loading loading-spinner loading-xs text-info"></span>
                 <% end %>
               </div>
               <%= if @agent.workstream_id do %>
                 <span class="text-xs text-base-content/50 font-mono">
-                  ws: <%= String.slice(@agent.workstream_id, 0, 12) %>...
+                  ws: {String.slice(@agent.workstream_id, 0, 12)}...
                 </span>
               <% end %>
             </div>
@@ -304,8 +309,7 @@ defmodule IpaWeb.Live.Components.AgentPanel do
                 phx-target={@myself}
                 class="btn btn-xs btn-error gap-1"
               >
-                <.icon name="hero-stop" class="w-3 h-3" />
-                Stop
+                <.icon name="hero-stop" class="w-3 h-3" /> Stop
               </button>
             <% else %>
               <%= if @is_running do %>
@@ -327,47 +331,46 @@ defmodule IpaWeb.Live.Components.AgentPanel do
             </button>
           </div>
         </div>
-
-        <!-- Status bar -->
+        
+    <!-- Status bar -->
         <div class="flex items-center gap-4 text-xs text-base-content/50 mt-2 font-mono">
           <span class="flex items-center gap-1">
             <.icon name="hero-finger-print" class="w-3 h-3" />
-            <%= String.slice(@agent.agent_id, 0, 8) %>
+            {String.slice(@agent.agent_id, 0, 8)}
           </span>
           <%= if @agent.started_at do %>
             <span class="flex items-center gap-1">
               <.icon name="hero-clock" class="w-3 h-3" />
-              <%= format_time(@agent.started_at) %>
+              {format_time(@agent.started_at)}
             </span>
           <% end %>
           <%= if @agent.completed_at do %>
             <span class="flex items-center gap-1">
               <.icon name="hero-check-circle" class="w-3 h-3" />
-              <%= format_time(@agent.completed_at) %>
+              {format_time(@agent.completed_at)}
             </span>
           <% end %>
         </div>
-
-        <!-- Expanded content -->
+        
+    <!-- Expanded content -->
         <%= if @expanded do %>
           <div class="mt-4 space-y-4">
             <!-- Terminal-style streaming output -->
             <div class="relative">
               <div class="flex items-center justify-between mb-2">
                 <h4 class="font-medium text-sm flex items-center gap-2">
-                  <.icon name="hero-command-line" class="w-4 h-4" />
-                  Agent Output
+                  <.icon name="hero-command-line" class="w-4 h-4" /> Agent Output
                   <%= if @is_running do %>
                     <span class="badge badge-xs badge-info">LIVE</span>
                   <% end %>
                 </h4>
                 <% char_count = String.length(@output) %>
                 <%= if char_count > 0 do %>
-                  <span class="text-xs text-base-content/40"><%= char_count %> chars</span>
+                  <span class="text-xs text-base-content/40">{char_count} chars</span>
                 <% end %>
               </div>
-
-              <!-- Terminal window -->
+              
+    <!-- Terminal window -->
               <div class="rounded-lg overflow-hidden border border-base-300 shadow-inner">
                 <!-- Terminal header bar -->
                 <div class="bg-base-300 px-3 py-1.5 flex items-center gap-2 border-b border-base-content/10">
@@ -380,8 +383,8 @@ defmodule IpaWeb.Live.Components.AgentPanel do
                     agent@ipa ~ streaming
                   </span>
                 </div>
-
-                <!-- Terminal content -->
+                
+    <!-- Terminal content -->
                 <div
                   class="p-4 font-mono text-sm min-h-[200px] max-h-[500px] overflow-y-auto scroll-smooth"
                   style="background-color: #1e1e2e; color: #cdd6f4;"
@@ -391,14 +394,22 @@ defmodule IpaWeb.Live.Components.AgentPanel do
                   <%= if @output != "" do %>
                     <pre class="whitespace-pre-wrap break-words leading-relaxed"><%= @output %></pre>
                     <%= if @is_running do %>
-                      <span class="inline-block w-2 h-4 animate-pulse ml-0.5" style="background-color: #89b4fa;"></span>
+                      <span
+                        class="inline-block w-2 h-4 animate-pulse ml-0.5"
+                        style="background-color: #89b4fa;"
+                      >
+                      </span>
                     <% end %>
                   <% else %>
                     <div class="flex items-center gap-2" style="color: #6c7086;">
                       <span style="color: #89b4fa;">$</span>
                       <%= if @is_running do %>
                         <span>Waiting for agent output...</span>
-                        <span class="inline-block w-2 h-4 animate-pulse" style="background-color: #89b4fa;"></span>
+                        <span
+                          class="inline-block w-2 h-4 animate-pulse"
+                          style="background-color: #89b4fa;"
+                        >
+                        </span>
                       <% else %>
                         <span>No output recorded</span>
                       <% end %>
@@ -407,54 +418,52 @@ defmodule IpaWeb.Live.Components.AgentPanel do
                 </div>
               </div>
             </div>
-
-            <!-- Tool calls (compact view) -->
+            
+    <!-- Tool calls (compact view) -->
             <% tool_calls = Map.get(@agent, :tool_calls, []) %>
             <%= if length(tool_calls) > 0 do %>
               <div>
                 <h4 class="font-medium text-sm mb-2 flex items-center gap-2">
-                  <.icon name="hero-wrench-screwdriver" class="w-4 h-4" />
-                  Tool Calls
-                  <span class="badge badge-xs badge-ghost"><%= length(tool_calls) %></span>
+                  <.icon name="hero-wrench-screwdriver" class="w-4 h-4" /> Tool Calls
+                  <span class="badge badge-xs badge-ghost">{length(tool_calls)}</span>
                 </h4>
                 <div class="flex flex-wrap gap-2">
                   <%= for tool <- Enum.take(tool_calls, 10) do %>
                     <span class={"badge badge-sm gap-1 #{if tool.status == :completed, do: "badge-success", else: "badge-warning"}"}>
-                      <%= tool.name %>
+                      {tool.name}
                       <%= if tool.status == :running do %>
                         <span class="loading loading-spinner loading-xs"></span>
                       <% end %>
                     </span>
                   <% end %>
                   <%= if length(tool_calls) > 10 do %>
-                    <span class="badge badge-sm badge-ghost">+<%= length(tool_calls) - 10 %> more</span>
+                    <span class="badge badge-sm badge-ghost">+{length(tool_calls) - 10} more</span>
                   <% end %>
                 </div>
               </div>
             <% end %>
-
-            <!-- Collapsible prompt -->
+            
+    <!-- Collapsible prompt -->
             <details class="collapse collapse-arrow bg-base-200 rounded-lg">
               <summary class="collapse-title text-sm font-medium py-2 min-h-0">
                 <span class="flex items-center gap-2">
-                  <.icon name="hero-document-text" class="w-4 h-4" />
-                  Prompt
+                  <.icon name="hero-document-text" class="w-4 h-4" /> Prompt
                 </span>
               </summary>
               <div class="collapse-content">
                 <div class="text-sm text-base-content/70 whitespace-pre-wrap font-mono bg-base-300 rounded p-3 max-h-48 overflow-y-auto">
-                  <%= Map.get(@agent, :prompt) || "No prompt available" %>
+                  {Map.get(@agent, :prompt) || "No prompt available"}
                 </div>
               </div>
             </details>
-
-            <!-- Error -->
+            
+    <!-- Error -->
             <%= if @agent.error do %>
               <div class="alert alert-error shadow-lg">
                 <.icon name="hero-exclamation-triangle" class="w-5 h-5" />
                 <div>
                   <h4 class="font-bold">Agent Error</h4>
-                  <p class="text-sm"><%= @agent.error %></p>
+                  <p class="text-sm">{@agent.error}</p>
                 </div>
               </div>
             <% end %>
@@ -490,8 +499,13 @@ defmodule IpaWeb.Live.Components.AgentPanel do
   defp format_agent_type(:workstream), do: "Workstream Agent"
   defp format_agent_type(:pr_consolidation), do: "PR Consolidation Agent"
   defp format_agent_type(:pr_comment_resolver), do: "PR Comment Resolver"
-  defp format_agent_type(type) when is_atom(type), do: type |> Atom.to_string() |> String.replace("_", " ") |> String.capitalize()
-  defp format_agent_type(type) when is_binary(type), do: String.replace(type, "_", " ") |> String.capitalize()
+
+  defp format_agent_type(type) when is_atom(type),
+    do: type |> Atom.to_string() |> String.replace("_", " ") |> String.capitalize()
+
+  defp format_agent_type(type) when is_binary(type),
+    do: String.replace(type, "_", " ") |> String.capitalize()
+
   defp format_agent_type(_), do: "Unknown Agent"
 
   defp format_time(nil), do: "-"

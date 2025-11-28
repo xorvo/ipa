@@ -9,7 +9,13 @@ import Config
 
 config :ipa,
   ecto_repos: [Ipa.Repo],
-  generators: [timestamp_type: :utc_datetime]
+  generators: [timestamp_type: :utc_datetime],
+  # Editor command to open workspaces. Use "zed", "code", "cursor", etc.
+  # Set to nil to disable the "Open in Editor" button
+  editor_command: "zed",
+  # Workspace storage path - use project directory instead of /tmp which gets cleaned by OS
+  # This ensures workstream files persist across system restarts
+  workspace_base_path: Path.expand("../workspaces", __DIR__)
 
 # Configures the endpoint
 config :ipa, IpaWeb.Endpoint,

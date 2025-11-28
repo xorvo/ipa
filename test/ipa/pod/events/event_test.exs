@@ -2,6 +2,7 @@ defmodule Ipa.Pod.EventTest do
   use ExUnit.Case, async: true
 
   alias Ipa.Pod.Event
+
   alias Ipa.Pod.Events.{
     TaskCreated,
     SpecApproved,

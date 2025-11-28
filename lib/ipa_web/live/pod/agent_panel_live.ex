@@ -26,6 +26,8 @@ defmodule IpaWeb.Pod.AgentPanelLive do
   @impl true
   def mount(_params, session, socket) do
     task_id = session["task_id"]
+    # Get selected agent from session (passed from parent TaskLive via URL param)
+    selected_agent_id = session["selected_agent_id"]
 
     socket =
       socket
@@ -33,7 +35,7 @@ defmodule IpaWeb.Pod.AgentPanelLive do
       |> assign(agents: [])
       |> assign(expanded_agents: MapSet.new())
       |> assign(streaming_outputs: %{})
-      |> assign(selected_agent_id: nil)
+      |> assign(selected_agent_id: selected_agent_id)
 
     if connected?(socket) && task_id do
       Logger.info("AgentPanelLive mounted for task #{task_id}")
@@ -217,13 +219,6 @@ defmodule IpaWeb.Pod.AgentPanelLive do
           <div class="absolute inset-0" phx-click="close_agent_detail"></div>
           <!-- Modal content -->
           <div class="relative bg-base-100 rounded-xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden">
-            <!-- Close button -->
-            <button
-              phx-click="close_agent_detail"
-              class="absolute top-4 right-4 z-10 btn btn-sm btn-circle btn-ghost"
-            >
-              <.icon name="hero-x-mark" class="w-5 h-5" />
-            </button>
             <!-- Agent Detail LiveView -->
             {live_render(@socket, IpaWeb.Pod.AgentDetailLive,
               id: "agent-detail-#{@selected_agent_id}",
@@ -256,10 +251,16 @@ defmodule IpaWeb.Pod.AgentPanelLive do
 
   def handle_event("view_agent_detail", %{"agent_id" => agent_id}, socket) do
     Logger.debug("Opening agent detail view for #{agent_id}")
+    task_id = socket.assigns.task_id
+    # Broadcast to parent via PubSub - nested LiveViews can't push_patch directly
+    Phoenix.PubSub.broadcast(Ipa.PubSub, "task:#{task_id}:ui", {:select_agent, agent_id})
     {:noreply, assign(socket, selected_agent_id: agent_id)}
   end
 
   def handle_event("close_agent_detail", _params, socket) do
+    task_id = socket.assigns.task_id
+    # Broadcast to parent to clear agent from URL
+    Phoenix.PubSub.broadcast(Ipa.PubSub, "task:#{task_id}:ui", {:select_agent, nil})
     {:noreply, assign(socket, selected_agent_id: nil)}
   end
 
@@ -327,6 +328,23 @@ defmodule IpaWeb.Pod.AgentPanelLive do
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to restart agent: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("mark_agent_failed", %{"agent_id" => agent_id}, socket) do
+    Logger.info("Marking dead agent as failed from UI", agent_id: agent_id)
+    task_id = socket.assigns.task_id
+
+    # Emit a failed event for the agent since the process died without proper cleanup
+    case Ipa.Pod.Manager.fail_agent(task_id, agent_id, "Process crashed or was killed", "system") do
+      {:ok, _version} ->
+        {:noreply, put_flash(socket, :info, "Agent marked as failed - you can now restart it")}
+
+      {:error, :agent_not_found} ->
+        {:noreply, put_flash(socket, :error, "Agent not found")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to mark agent: #{inspect(reason)}")}
     end
   end
 
@@ -528,6 +546,13 @@ defmodule IpaWeb.Pod.AgentPanelLive do
             <% else %>
               <%= if @is_running do %>
                 <span class="badge badge-xs badge-warning">Process Dead</span>
+                <button
+                  phx-click="mark_agent_failed"
+                  phx-value-agent_id={@agent.agent_id}
+                  class="btn btn-xs btn-error gap-1"
+                >
+                  <.icon name="hero-x-circle" class="w-3 h-3" /> Mark Failed
+                </button>
               <% end %>
             <% end %>
             <%= if @agent.status in [:failed, :interrupted] do %>

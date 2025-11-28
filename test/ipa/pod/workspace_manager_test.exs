@@ -14,20 +14,23 @@ defmodule Ipa.Pod.WorkspaceManagerTest do
       {:ok, ^task_id} = EventStore.start_stream("task", task_id)
 
       # Create a temporary workspace directory manually for testing
-      workspace_path = Path.join(System.tmp_dir!(), "ipa_test_#{System.unique_integer([:positive])}")
+      workspace_path =
+        Path.join(System.tmp_dir!(), "ipa_test_#{System.unique_integer([:positive])}")
+
       File.mkdir_p!(workspace_path)
 
       # Add workspace_created event to simulate existing workspace
-      {:ok, _} = EventStore.append(
-        task_id,
-        "workspace_created",
-        %{
-          agent_id: agent_id,
-          workspace_path: workspace_path,
-          config: %{}
-        },
-        actor_id: "system"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workspace_created",
+          %{
+            agent_id: agent_id,
+            workspace_path: workspace_path,
+            config: %{}
+          },
+          actor_id: "system"
+        )
 
       {:ok, pid} = WorkspaceManager.start_link(task_id: task_id)
 
@@ -98,20 +101,23 @@ defmodule Ipa.Pod.WorkspaceManagerTest do
       {:ok, ^task_id} = EventStore.start_stream("task", task_id)
 
       # Create a temporary workspace directory manually
-      workspace_path = Path.join(System.tmp_dir!(), "ipa_test_#{System.unique_integer([:positive])}")
+      workspace_path =
+        Path.join(System.tmp_dir!(), "ipa_test_#{System.unique_integer([:positive])}")
+
       File.mkdir_p!(workspace_path)
 
       # Add workspace_created event
-      {:ok, _} = EventStore.append(
-        task_id,
-        "workspace_created",
-        %{
-          agent_id: agent_id,
-          workspace_path: workspace_path,
-          config: %{}
-        },
-        actor_id: "system"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workspace_created",
+          %{
+            agent_id: agent_id,
+            workspace_path: workspace_path,
+            config: %{}
+          },
+          actor_id: "system"
+        )
 
       {:ok, pid} = WorkspaceManager.start_link(task_id: task_id)
 
@@ -221,16 +227,17 @@ defmodule Ipa.Pod.WorkspaceManagerTest do
       # Create task stream and add workspace_created event
       {:ok, ^task_id} = EventStore.start_stream("task", task_id)
 
-      {:ok, _} = EventStore.append(
-        task_id,
-        "workspace_created",
-        %{
-          agent_id: agent_id,
-          workspace_path: "/ipa/workspaces/#{task_id}/#{agent_id}",
-          config: %{max_size_mb: 500}
-        },
-        actor_id: "system"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workspace_created",
+          %{
+            agent_id: agent_id,
+            workspace_path: "/ipa/workspaces/#{task_id}/#{agent_id}",
+            config: %{max_size_mb: 500}
+          },
+          actor_id: "system"
+        )
 
       {:ok, pid} = WorkspaceManager.start_link(task_id: task_id)
 
@@ -249,16 +256,17 @@ defmodule Ipa.Pod.WorkspaceManagerTest do
       {:ok, ^task_id} = EventStore.start_stream("task", task_id)
 
       # Add workspace_created events
-      {:ok, _} = EventStore.append(
-        task_id,
-        "workspace_created",
-        %{
-          agent_id: agent_id_1,
-          workspace_path: "/ipa/workspaces/#{task_id}/#{agent_id_1}",
-          config: %{}
-        },
-        actor_id: "system"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workspace_created",
+          %{
+            agent_id: agent_id_1,
+            workspace_path: "/ipa/workspaces/#{task_id}/#{agent_id_1}",
+            config: %{}
+          },
+          actor_id: "system"
+        )
 
       {:ok, _} =
         EventStore.append(
@@ -273,16 +281,17 @@ defmodule Ipa.Pod.WorkspaceManagerTest do
         )
 
       # Add workspace_cleanup event for agent_id_1
-      {:ok, _} = EventStore.append(
-        task_id,
-        "workspace_cleanup",
-        %{
-          agent_id: agent_id_1,
-          workspace_path: "/ipa/workspaces/#{task_id}/#{agent_id_1}",
-          cleanup_reason: "test"
-        },
-        actor_id: "system"
-      )
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workspace_cleanup",
+          %{
+            agent_id: agent_id_1,
+            workspace_path: "/ipa/workspaces/#{task_id}/#{agent_id_1}",
+            cleanup_reason: "test"
+          },
+          actor_id: "system"
+        )
 
       {:ok, pid} = WorkspaceManager.start_link(task_id: task_id)
 
@@ -303,12 +312,19 @@ defmodule Ipa.Pod.WorkspaceManagerTest do
       agent_id = "agent-#{UUID.uuid4()}"
 
       # Use a temporary directory for workspace base path
-      temp_base = Path.join(System.tmp_dir!(), "ipa_ws_create_#{System.unique_integer([:positive])}")
+      temp_base =
+        Path.join(System.tmp_dir!(), "ipa_ws_create_#{System.unique_integer([:positive])}")
+
       File.mkdir_p!(temp_base)
 
       # Configure the temp base path for this test
       original_config = Application.get_env(:ipa, WorkspaceManager, [])
-      Application.put_env(:ipa, WorkspaceManager, Keyword.put(original_config, :base_path, temp_base))
+
+      Application.put_env(
+        :ipa,
+        WorkspaceManager,
+        Keyword.put(original_config, :base_path, temp_base)
+      )
 
       # Create task stream
       {:ok, ^task_id} = EventStore.start_stream("task", task_id)
@@ -396,12 +412,19 @@ defmodule Ipa.Pod.WorkspaceManagerTest do
       agent_id = "agent-#{UUID.uuid4()}"
 
       # Use a temporary directory for workspace base path
-      temp_base = Path.join(System.tmp_dir!(), "ipa_ws_test_#{System.unique_integer([:positive])}")
+      temp_base =
+        Path.join(System.tmp_dir!(), "ipa_ws_test_#{System.unique_integer([:positive])}")
+
       File.mkdir_p!(temp_base)
 
       # Configure the temp base path for this test
       original_config = Application.get_env(:ipa, WorkspaceManager, [])
-      Application.put_env(:ipa, WorkspaceManager, Keyword.put(original_config, :base_path, temp_base))
+
+      Application.put_env(
+        :ipa,
+        WorkspaceManager,
+        Keyword.put(original_config, :base_path, temp_base)
+      )
 
       # Create task stream
       {:ok, ^task_id} = EventStore.start_stream("task", task_id)

@@ -145,6 +145,7 @@ defmodule Ipa.Agent.Types.Planning do
           task_id: task_id,
           expected_path: plan_path
         )
+
         {:error, :plan_file_not_found}
 
       {:error, reason} ->
@@ -153,6 +154,7 @@ defmodule Ipa.Agent.Types.Planning do
           path: plan_path,
           reason: inspect(reason)
         )
+
         {:error, {:file_read_error, reason}}
     end
   end

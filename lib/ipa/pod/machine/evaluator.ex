@@ -75,7 +75,8 @@ defmodule Ipa.Pod.Machine.Evaluator do
         end
 
       # Plan approved but workstreams not yet created - create them from plan
-      State.plan_approved?(state) and has_plan_workstreams?(state) and map_size(state.workstreams) == 0 ->
+      State.plan_approved?(state) and has_plan_workstreams?(state) and
+          map_size(state.workstreams) == 0 ->
         [{:create_workstreams_from_plan, state.plan.workstreams}]
 
       # Already have a planning agent (running or completed) - don't spawn another

@@ -401,7 +401,9 @@ defmodule Ipa.Pod.ExternalSync do
 
   @impl true
   def terminate(reason, state) do
-    Logger.info("External Sync shutting down for task #{state.task_id}, reason: #{inspect(reason)}")
+    Logger.info(
+      "External Sync shutting down for task #{state.task_id}, reason: #{inspect(reason)}"
+    )
 
     # Cancel poll timer
     if state.poll_timer_ref do

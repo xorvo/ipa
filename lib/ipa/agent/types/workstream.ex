@@ -30,10 +30,11 @@ defmodule Ipa.Agent.Types.Workstream do
     workstream = context[:workstream] || %{}
     task = context[:task] || %{}
 
-    workstream_id = workstream[:workstream_id] || context[:workstream_id] || "unknown"
-    spec = workstream[:spec] || "No spec provided"
-    dependencies = workstream[:dependencies] || []
-    task_title = task[:title] || task["title"] || "Untitled Task"
+    # Use safe field access that works for both maps and structs
+    workstream_id = get_field(workstream, :workstream_id) || context[:workstream_id] || "unknown"
+    spec = get_field(workstream, :spec) || "No spec provided"
+    dependencies = get_field(workstream, :dependencies) || []
+    task_title = get_field(task, :title) || get_field(task, "title") || "Untitled Task"
 
     dependencies_text =
       if Enum.empty?(dependencies) do
@@ -113,6 +114,12 @@ defmodule Ipa.Agent.Types.Workstream do
   # ============================================================================
   # Private Functions
   # ============================================================================
+
+  # Safe field access that works for both maps and structs
+  defp get_field(nil, _key), do: nil
+  defp get_field(data, key) when is_struct(data), do: Map.get(data, key)
+  defp get_field(data, key) when is_map(data), do: data[key]
+  defp get_field(_data, _key), do: nil
 
   defp workstream_complete?(nil) do
     # No workspace path set - can't check for completion marker

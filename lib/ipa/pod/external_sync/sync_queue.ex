@@ -218,7 +218,13 @@ defmodule Ipa.Pod.ExternalSync.SyncQueue do
               %{state | processing: false, last_error: reason}
             else
               Logger.error("Operation #{item.operation} failed after #{@max_retries} retries")
-              %{state | processing: false, failed_count: state.failed_count + 1, last_error: reason}
+
+              %{
+                state
+                | processing: false,
+                  failed_count: state.failed_count + 1,
+                  last_error: reason
+              }
             end
 
           {:error, reason} ->
@@ -247,6 +253,7 @@ defmodule Ipa.Pod.ExternalSync.SyncQueue do
                 %{workstream_id: data.workstream_id, pr_number: pr_number, pr_url: pr_url},
                 actor_id: "sync_queue"
               )
+
               :ok
 
             {:error, :rate_limited} ->
@@ -366,6 +373,6 @@ defmodule Ipa.Pod.ExternalSync.SyncQueue do
 
   defp calculate_backoff(retry_count) do
     # Exponential backoff: 5s, 10s, 20s, etc.
-    @base_delay_ms * :math.pow(2, retry_count) |> round()
+    (@base_delay_ms * :math.pow(2, retry_count)) |> round()
   end
 end

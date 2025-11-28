@@ -33,6 +33,7 @@ defmodule Ipa.Pod.Manager do
   alias Ipa.Pod.State
   alias Ipa.Pod.State.Projector
   alias Ipa.Pod.Machine.Evaluator
+
   alias Ipa.Pod.Commands.{
     PhaseCommands,
     WorkstreamCommands,
@@ -127,6 +128,68 @@ defmodule Ipa.Pod.Manager do
     end
   end
 
+  @doc """
+  Manually starts a pending agent (when auto_start_agents is disabled).
+  """
+  @spec manually_start_agent(String.t(), String.t(), String.t() | nil) ::
+          {:ok, integer()} | {:error, term()}
+  def manually_start_agent(task_id, agent_id, started_by \\ nil) do
+    case GenServer.whereis(via_tuple(task_id)) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:manually_start_agent, agent_id, started_by})
+    end
+  end
+
+  @doc """
+  Sends a message to an interactive agent.
+  """
+  @spec send_agent_message(String.t(), String.t(), String.t(), map()) ::
+          {:ok, integer()} | {:error, term()}
+  def send_agent_message(task_id, agent_id, message, opts \\ %{}) do
+    case GenServer.whereis(via_tuple(task_id)) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:send_agent_message, agent_id, message, opts})
+    end
+  end
+
+  @doc """
+  Marks an agent's work as done/approved.
+  """
+  @spec mark_agent_done(String.t(), String.t(), map()) :: {:ok, integer()} | {:error, term()}
+  def mark_agent_done(task_id, agent_id, opts \\ %{}) do
+    case GenServer.whereis(via_tuple(task_id)) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:mark_agent_done, agent_id, opts})
+    end
+  end
+
+  @doc """
+  Restarts a failed or interrupted agent.
+
+  Creates a new pending agent with the same context (workstream, workspace, etc.)
+  but a new agent_id. Returns {:ok, new_agent_id, version} on success.
+  """
+  @spec restart_agent(String.t(), String.t(), String.t() | nil) ::
+          {:ok, String.t(), integer()} | {:error, term()}
+  def restart_agent(task_id, agent_id, restarted_by \\ nil) do
+    case GenServer.whereis(via_tuple(task_id)) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:restart_agent, agent_id, restarted_by})
+    end
+  end
+
+  @doc """
+  Marks an agent as failed. Used when the agent process died without proper cleanup.
+  """
+  @spec fail_agent(String.t(), String.t(), String.t(), String.t() | nil) ::
+          {:ok, integer()} | {:error, term()}
+  def fail_agent(task_id, agent_id, error, actor_id \\ nil) do
+    case GenServer.whereis(via_tuple(task_id)) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:fail_agent, agent_id, error, actor_id})
+    end
+  end
+
   # ============================================================================
   # GenServer Callbacks
   # ============================================================================
@@ -160,6 +223,111 @@ defmodule Ipa.Pod.Manager do
           {:ok, new_state} ->
             broadcast_state_update(new_state)
             maybe_trigger_evaluation(events)
+            {:reply, {:ok, new_state.version}, new_state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:manually_start_agent, agent_id, started_by}, _from, state) do
+    # First, record the manual start event
+    case AgentCommands.manually_start_agent(state, agent_id, started_by) do
+      {:ok, events} ->
+        case persist_and_apply_events(state, events) do
+          {:ok, new_state} ->
+            broadcast_state_update(new_state)
+
+            # Now actually spawn the agent process
+            agent = Enum.find(new_state.agents, fn a -> a.agent_id == agent_id end)
+
+            if agent do
+              spawn_pending_agent(new_state, agent)
+            end
+
+            {:reply, {:ok, new_state.version}, new_state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:send_agent_message, agent_id, message, opts}, _from, state) do
+    case AgentCommands.send_message_to_agent(state, agent_id, message, opts) do
+      {:ok, events} ->
+        case persist_and_apply_events(state, events) do
+          {:ok, new_state} ->
+            broadcast_state_update(new_state)
+            # TODO: In Phase 2, this will also send the message to the running agent session
+            {:reply, {:ok, new_state.version}, new_state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:mark_agent_done, agent_id, opts}, _from, state) do
+    case AgentCommands.mark_agent_done(state, agent_id, opts) do
+      {:ok, events} ->
+        case persist_and_apply_events(state, events) do
+          {:ok, new_state} ->
+            broadcast_state_update(new_state)
+            send(self(), :evaluate)
+            {:reply, {:ok, new_state.version}, new_state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:restart_agent, agent_id, restarted_by}, _from, state) do
+    case AgentCommands.restart_agent(state, agent_id, restarted_by) do
+      {:ok, events} ->
+        case persist_and_apply_events(state, events) do
+          {:ok, new_state} ->
+            broadcast_state_update(new_state)
+
+            # Extract the new agent_id from the event
+            [pending_event | _] = events
+            new_agent_id = pending_event.agent_id
+
+            {:reply, {:ok, new_agent_id, new_state.version}, new_state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:fail_agent, agent_id, error, _actor_id}, _from, state) do
+    case AgentCommands.fail_agent(state, agent_id, error) do
+      {:ok, events} ->
+        case persist_and_apply_events(state, events) do
+          {:ok, new_state} ->
+            broadcast_state_update(new_state)
             {:reply, {:ok, new_state.version}, new_state}
 
           {:error, reason} ->
@@ -415,37 +583,48 @@ defmodule Ipa.Pod.Manager do
       }
     }
 
-    Logger.debug("Starting planning agent",
+    Logger.debug("Preparing planning agent",
       task_id: state.task_id,
       workspace: workspace_path,
-      title: agent_context.task.title
+      title: agent_context.task.title,
+      auto_start: state.config.auto_start_agents
     )
 
-    # Try to spawn planning agent
-    case Ipa.Agent.Supervisor.start_agent(state.task_id, Ipa.Agent.Types.Planning, agent_context) do
-      {:ok, agent_id} ->
-        case AgentCommands.start_agent(state, %{
-               agent_id: agent_id,
-               agent_type: :planning,
-               workspace_path: workspace_path
-             }) do
-          {:ok, events} ->
-            case persist_and_apply_events(state, events) do
-              {:ok, new_state} ->
-                broadcast_state_update(new_state)
-                new_state
+    # Check if auto_start is enabled
+    if state.config.auto_start_agents do
+      # Auto-start: spawn immediately (original behavior)
+      spawn_agent_immediately(
+        state,
+        :planning,
+        Ipa.Agent.Types.Planning,
+        agent_context,
+        workspace_path
+      )
+    else
+      # Manual start: create pending agent, wait for user to start
+      agent_id = Ecto.UUID.generate()
+      prompt = Ipa.Agent.Types.Planning.generate_prompt(agent_context)
 
-              _ ->
-                state
-            end
+      case AgentCommands.prepare_agent(state, %{
+             agent_id: agent_id,
+             agent_type: :planning_agent,
+             workspace_path: workspace_path,
+             prompt: prompt,
+             interactive: true
+           }) do
+        {:ok, events} ->
+          case persist_and_apply_events(state, events) do
+            {:ok, new_state} ->
+              broadcast_state_update(new_state)
+              new_state
 
-          _ ->
-            state
-        end
+            _ ->
+              state
+          end
 
-      {:error, reason} ->
-        Logger.error("Failed to start planning agent: #{inspect(reason)}")
-        state
+        _ ->
+          state
+      end
     end
   end
 
@@ -486,6 +665,96 @@ defmodule Ipa.Pod.Manager do
   end
 
   defp execute_action(state, :noop), do: state
+
+  # Helper to spawn agent immediately (when auto_start is true)
+  defp spawn_agent_immediately(state, agent_type, agent_module, context, workspace_path) do
+    case Ipa.Agent.Supervisor.start_agent(state.task_id, agent_module, context) do
+      {:ok, agent_id} ->
+        case AgentCommands.start_agent(state, %{
+               agent_id: agent_id,
+               agent_type: agent_type,
+               workspace_path: workspace_path
+             }) do
+          {:ok, events} ->
+            case persist_and_apply_events(state, events) do
+              {:ok, new_state} ->
+                broadcast_state_update(new_state)
+                new_state
+
+              _ ->
+                state
+            end
+
+          _ ->
+            state
+        end
+
+      {:error, reason} ->
+        Logger.error("Failed to start #{agent_type} agent: #{inspect(reason)}")
+        state
+    end
+  end
+
+  # Helper to spawn a pending agent when manually started
+  defp spawn_pending_agent(state, agent) do
+    # Build context based on agent type
+    context = build_agent_context(state, agent)
+
+    # Determine the agent module
+    agent_module =
+      case agent.agent_type do
+        :planning -> Ipa.Agent.Types.Planning
+        :planning_agent -> Ipa.Agent.Types.Planning
+        :workstream -> Ipa.Agent.Types.Workstream
+        :review -> Ipa.Agent.Types.Review
+        _ -> Ipa.Agent.Types.Workstream
+      end
+
+    Logger.info("Spawning manually started agent",
+      agent_id: agent.agent_id,
+      agent_type: agent.agent_type,
+      workspace: agent.workspace_path
+    )
+
+    # Start the actual agent process
+    case Ipa.Agent.Supervisor.start_agent(
+           state.task_id,
+           agent_module,
+           Map.put(context, :agent_id, agent.agent_id)
+         ) do
+      {:ok, _pid} ->
+        Logger.info("Successfully spawned agent #{agent.agent_id}")
+        :ok
+
+      {:error, reason} ->
+        Logger.error("Failed to spawn agent #{agent.agent_id}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp build_agent_context(state, agent) do
+    base_context = %{
+      task_id: state.task_id,
+      workspace: agent.workspace_path,
+      task: %{
+        task_id: state.task_id,
+        title: state.title,
+        spec: state.spec
+      }
+    }
+
+    # Add workstream context if applicable
+    if agent.workstream_id do
+      workstream = Map.get(state.workstreams, agent.workstream_id)
+
+      Map.merge(base_context, %{
+        workstream_id: agent.workstream_id,
+        workstream: workstream
+      })
+    else
+      base_context
+    end
+  end
 
   defp create_planning_workspace(task_id) do
     # Use a temporary directory for planning agent workspace
@@ -545,7 +814,11 @@ defmodule Ipa.Pod.Manager do
 
     case File.mkdir_p(workspace_path) do
       :ok ->
-        Logger.debug("Created workstream workspace", path: workspace_path, workstream_id: workstream_id)
+        Logger.debug("Created workstream workspace",
+          path: workspace_path,
+          workstream_id: workstream_id
+        )
+
         workspace_path
 
       {:error, reason} ->

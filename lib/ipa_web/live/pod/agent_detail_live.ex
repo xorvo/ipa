@@ -25,16 +25,20 @@ defmodule IpaWeb.Pod.AgentDetailLive do
       |> assign(task_id: task_id)
       |> assign(agent_id: agent_id)
       |> assign(agent: nil)
+      |> assign(plan: nil)
+      |> assign(show_plan_preview: false)
       |> assign(streaming_output: "")
       |> assign(message_input: "")
       |> assign(batch_messages: [])
       |> assign(batch_mode: false)
 
     if connected?(socket) && task_id && agent_id do
-      Logger.info("AgentDetailLive mounted for agent #{agent_id}")
+      Logger.info("AgentDetailLive mounted for agent #{agent_id}, pid=#{inspect(self())}")
 
       # Subscribe to this agent's stream for live updates
-      Phoenix.PubSub.subscribe(Ipa.PubSub, "agent:#{agent_id}:stream")
+      topic = "agent:#{agent_id}:stream"
+      Logger.info("AgentDetailLive subscribing to #{topic}, pid=#{inspect(self())}")
+      Phoenix.PubSub.subscribe(Ipa.PubSub, topic)
 
       # Subscribe to EventStore for agent events
       Ipa.EventStore.subscribe(task_id)
@@ -43,6 +47,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
       case Ipa.Pod.Manager.get_state_from_events(task_id) do
         {:ok, state} ->
           agent = Enum.find(state.agents || [], fn a -> a.agent_id == agent_id end)
+          Logger.info("AgentDetailLive found agent: #{inspect(agent && agent.agent_id)}, status: #{inspect(agent && agent.status)}")
 
           # Initialize streaming_output with persisted output only if:
           # - Agent is completed/failed AND has output AND has no conversation history
@@ -55,7 +60,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
               ""
             end
 
-          {:ok, assign(socket, agent: agent, streaming_output: streaming_output)}
+          {:ok, assign(socket, agent: agent, plan: state.plan, streaming_output: streaming_output)}
 
         {:error, _} ->
           {:ok, socket}
@@ -103,6 +108,17 @@ defmodule IpaWeb.Pod.AgentDetailLive do
                 <.icon name="hero-stop" class="w-4 h-4" /> Stop Agent
               </button>
             <% end %>
+            <%= if @agent.status == :running && !Ipa.Agent.Instance.alive?(@agent.agent_id) do %>
+              <span class="badge badge-warning gap-1">
+                <.icon name="hero-exclamation-triangle" class="w-3 h-3" /> Process Dead
+              </span>
+              <button
+                phx-click="mark_agent_failed"
+                class="btn btn-sm btn-error gap-1"
+              >
+                <.icon name="hero-x-circle" class="w-4 h-4" /> Mark Failed
+              </button>
+            <% end %>
             <%= if @agent.status in [:failed, :interrupted] do %>
               <button
                 phx-click="restart_agent"
@@ -113,7 +129,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
             <% end %>
           </div>
         </div>
-        
+
     <!-- Metadata bar -->
         <div class="flex items-center gap-6 px-4 py-2 bg-base-100 border-b border-base-300 text-sm text-base-content/60 font-mono">
           <span class="flex items-center gap-1">
@@ -132,7 +148,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
             </span>
           <% end %>
         </div>
-        
+
     <!-- Main content - Conversation panel -->
         <div class="flex-1 overflow-hidden flex flex-col">
           <!-- Header bar -->
@@ -150,15 +166,15 @@ defmodule IpaWeb.Pod.AgentDetailLive do
               <% end %>
             </div>
           </div>
-          
+
     <!-- Conversation content -->
           <div
-            class="flex-1 p-4 overflow-y-auto bg-base-200"
+            class="flex-1 p-4 overflow-y-auto bg-neutral text-neutral-content/90 font-mono"
             id="agent-detail-conversation"
             phx-hook="AutoScroll"
           >
             <% conversation = @agent.conversation_history || [] %>
-            <div class="space-y-4">
+            <div class="space-y-1">
               <!-- Conversation history with interleaved responses -->
               <%= for {msg, idx} <- Enum.with_index(conversation) do %>
                 <.conversation_bubble
@@ -168,31 +184,31 @@ defmodule IpaWeb.Pod.AgentDetailLive do
                   timestamp={Map.get(msg, :timestamp)}
                   batch_id={Map.get(msg, :batch_id)}
                 />
-                
-    <!-- Show streaming agent response only while actively running -->
-                <%= if idx == length(conversation) - 1 && @streaming_output != "" && @agent.status == :running do %>
+
+    <!-- Show streaming agent response after the last message -->
+                <%= if idx == length(conversation) - 1 && @streaming_output != "" do %>
                   <.conversation_bubble
                     role={:assistant}
                     content={@streaming_output}
                     label="Agent"
-                    is_streaming={true}
+                    is_streaming={Ipa.Agent.Instance.alive?(@agent.agent_id)}
                   />
                 <% end %>
               <% end %>
-              
+
     <!-- If no conversation but we have output, show it -->
               <%= if Enum.empty?(conversation) && @streaming_output != "" do %>
                 <.conversation_bubble
                   role={:assistant}
                   content={@streaming_output}
                   label="Agent"
-                  is_streaming={@agent.status == :running}
+                  is_streaming={Ipa.Agent.Instance.alive?(@agent.agent_id)}
                 />
               <% end %>
-              
+
     <!-- Empty state -->
               <%= if Enum.empty?(conversation) && @streaming_output == "" do %>
-                <div class="text-center py-8 text-base-content/50">
+                <div class="text-center py-8 text-neutral-content/50">
                   <.icon name="hero-chat-bubble-left-right" class="w-12 h-12 mx-auto mb-3 opacity-30" />
                   <p class="text-sm">
                     <%= if @agent.status == :running do %>
@@ -206,7 +222,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
             </div>
           </div>
         </div>
-        
+
     <!-- Error banner if failed -->
         <%= if @agent.error do %>
           <div class="alert alert-error rounded-none">
@@ -217,7 +233,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
             </div>
           </div>
         <% end %>
-        
+
     <!-- Message input panel for interactive agents -->
         <%= if @agent.status == :awaiting_input do %>
           <div class="border-t border-base-300 bg-base-100 p-4">
@@ -252,7 +268,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
                 </div>
               </div>
             <% end %>
-            
+
     <!-- Message input form -->
             <form
               phx-submit={if @batch_mode, do: "add_to_batch", else: "send_message"}
@@ -269,19 +285,19 @@ defmodule IpaWeb.Pod.AgentDetailLive do
                 ></textarea>
               </div>
               <div class="flex items-center justify-between">
-                <div class="flex items-center gap-2">
-                  <label class="label cursor-pointer gap-2">
+                <div class="flex items-center gap-3">
+                  <label class="flex items-center gap-2 cursor-pointer">
+                    <span class="text-sm text-base-content/70">Batch</span>
                     <input
                       type="checkbox"
-                      class="checkbox checkbox-sm checkbox-primary"
+                      class="toggle toggle-sm toggle-primary"
                       checked={@batch_mode}
                       phx-click="toggle_batch_mode"
                     />
-                    <span class="label-text text-sm">Batch mode</span>
                   </label>
                   <%= if @batch_mode do %>
                     <span class="text-xs text-base-content/50">
-                      Add multiple messages before sending
+                      Queue multiple messages
                     </span>
                   <% end %>
                 </div>
@@ -313,6 +329,15 @@ defmodule IpaWeb.Pod.AgentDetailLive do
                       <.icon name="hero-paper-airplane" class="w-4 h-4" /> Send
                     </button>
                   <% end %>
+                  <%= if @plan && is_planning_agent?(@agent) do %>
+                    <button
+                      type="button"
+                      phx-click="show_plan_preview"
+                      class="btn btn-outline btn-sm gap-1"
+                    >
+                      <.icon name="hero-document-text" class="w-4 h-4" /> Preview Plan
+                    </button>
+                  <% end %>
                   <button
                     type="button"
                     phx-click="mark_done"
@@ -323,6 +348,71 @@ defmodule IpaWeb.Pod.AgentDetailLive do
                 </div>
               </div>
             </form>
+          </div>
+        <% end %>
+
+    <!-- Plan Preview Modal -->
+        <%= if @show_plan_preview && @plan do %>
+          <div class="modal modal-open">
+            <div class="modal-box max-w-4xl max-h-[80vh]">
+              <div class="flex items-center justify-between mb-4">
+                <h3 class="font-bold text-lg">Plan Preview</h3>
+                <button phx-click="hide_plan_preview" class="btn btn-sm btn-ghost btn-circle">
+                  <.icon name="hero-x-mark" class="w-5 h-5" />
+                </button>
+              </div>
+
+              <%= if @plan[:summary] || @plan["summary"] do %>
+                <div class="mb-4">
+                  <h4 class="text-sm font-medium text-base-content/70 mb-2">Summary</h4>
+                  <div class="text-sm whitespace-pre-wrap bg-base-200 p-3 rounded-lg">
+                    {@plan[:summary] || @plan["summary"]}
+                  </div>
+                </div>
+              <% end %>
+
+              <% workstreams = @plan[:workstreams] || @plan["workstreams"] || [] %>
+              <%= if length(workstreams) > 0 do %>
+                <div>
+                  <h4 class="text-sm font-medium text-base-content/70 mb-2">
+                    Workstreams ({length(workstreams)})
+                  </h4>
+                  <div class="space-y-3 max-h-[400px] overflow-y-auto">
+                    <%= for {ws, idx} <- Enum.with_index(workstreams) do %>
+                      <div class="bg-base-200 p-3 rounded-lg">
+                        <div class="flex items-start gap-2">
+                          <span class="badge badge-sm badge-primary">{idx + 1}</span>
+                          <div class="flex-1">
+                            <div class="font-medium text-sm">
+                              {ws[:title] || ws["title"] || "Untitled Workstream"}
+                            </div>
+                            <%= if ws[:spec] || ws["spec"] do %>
+                              <div class="text-xs text-base-content/70 mt-1 whitespace-pre-wrap">
+                                {ws[:spec] || ws["spec"]}
+                              </div>
+                            <% end %>
+                            <%= if (ws[:dependencies] || ws["dependencies"] || []) != [] do %>
+                              <div class="text-xs text-base-content/50 mt-2">
+                                Dependencies: {Enum.join(ws[:dependencies] || ws["dependencies"], ", ")}
+                              </div>
+                            <% end %>
+                          </div>
+                        </div>
+                      </div>
+                    <% end %>
+                  </div>
+                </div>
+              <% else %>
+                <div class="text-center py-4 text-base-content/50">
+                  <p class="text-sm">No workstreams defined yet</p>
+                </div>
+              <% end %>
+
+              <div class="modal-action">
+                <button phx-click="hide_plan_preview" class="btn">Close</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" phx-click="hide_plan_preview"></div>
           </div>
         <% end %>
       <% else %>
@@ -342,6 +432,14 @@ defmodule IpaWeb.Pod.AgentDetailLive do
   # ============================================================================
 
   @impl true
+  def handle_event("show_plan_preview", _params, socket) do
+    {:noreply, assign(socket, show_plan_preview: true)}
+  end
+
+  def handle_event("hide_plan_preview", _params, socket) do
+    {:noreply, assign(socket, show_plan_preview: false)}
+  end
+
   def handle_event("interrupt_agent", _params, socket) do
     agent_id = socket.assigns.agent_id
     Logger.info("Interrupting agent from detail view", agent_id: agent_id)
@@ -352,6 +450,21 @@ defmodule IpaWeb.Pod.AgentDetailLive do
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to interrupt: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("mark_agent_failed", _params, socket) do
+    agent_id = socket.assigns.agent_id
+    task_id = socket.assigns.task_id
+    Logger.info("Marking dead agent as failed from detail view", agent_id: agent_id)
+
+    # Emit a failed event for the agent since the process died without proper cleanup
+    case Ipa.Pod.Manager.fail_agent(task_id, agent_id, "Process crashed or was killed", "system") do
+      {:ok, _version} ->
+        {:noreply, put_flash(socket, :info, "Agent marked as failed")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to mark agent as failed: #{inspect(reason)}")}
     end
   end
 
@@ -510,6 +623,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
   @impl true
   def handle_info({:text_delta, agent_id, %{text: text}}, socket)
       when agent_id == socket.assigns.agent_id do
+    Logger.debug("AgentDetailLive received text_delta for #{agent_id}: #{String.slice(text, 0, 30)}...")
     current = socket.assigns.streaming_output
     {:noreply, assign(socket, streaming_output: current <> text)}
   end
@@ -542,15 +656,25 @@ defmodule IpaWeb.Pod.AgentDetailLive do
              "agent_manually_started",
              "agent_marked_done",
              "agent_response_received",
-             "agent_message_sent"
+             "agent_message_sent",
+             "plan_created",
+             "plan_updated"
            ] ->
-        # Reload agent from state
+        # Reload agent and plan from state
         case Ipa.Pod.Manager.get_state_from_events(task_id) do
           {:ok, state} ->
             agent =
               Enum.find(state.agents || [], fn a -> a.agent_id == socket.assigns.agent_id end)
 
-            {:noreply, assign(socket, agent: agent)}
+            # Clear streaming output when response is received (it's now in conversation_history)
+            socket =
+              if type == "agent_response_received" do
+                assign(socket, streaming_output: "")
+              else
+                socket
+              end
+
+            {:noreply, assign(socket, agent: agent, plan: state.plan)}
 
           {:error, _} ->
             {:noreply, socket}
@@ -562,7 +686,8 @@ defmodule IpaWeb.Pod.AgentDetailLive do
   end
 
   # Catch-all for other messages
-  def handle_info(_msg, socket) do
+  def handle_info(msg, socket) do
+    Logger.debug("AgentDetailLive catch-all received: #{inspect(msg, limit: 100)}")
     {:noreply, socket}
   end
 
@@ -580,6 +705,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
     """
   end
 
+  # Claude Code style message display - stream of text with user messages highlighted
   defp conversation_bubble(assigns) do
     assigns =
       assigns
@@ -588,87 +714,43 @@ defmodule IpaWeb.Pod.AgentDetailLive do
       |> Map.put_new(:is_streaming, false)
 
     ~H"""
-    <div class={bubble_container_class(@role)}>
-      <!-- Avatar/Icon -->
-      <div class={bubble_avatar_class(@role)}>
-        <%= case @role do %>
-          <% :system -> %>
-            <.icon name="hero-cog-6-tooth" class="w-4 h-4" />
-          <% :user -> %>
-            <.icon name="hero-user" class="w-4 h-4" />
-          <% :assistant -> %>
-            <.icon name="hero-cpu-chip" class="w-4 h-4" />
-          <% _ -> %>
-            <.icon name="hero-chat-bubble-left" class="w-4 h-4" />
-        <% end %>
-      </div>
-      
-    <!-- Message content -->
-      <div class="flex-1 min-w-0">
-        <!-- Header -->
-        <div class="flex items-center gap-2 mb-1">
-          <span class={bubble_label_class(@role)}>{@label}</span>
-          <%= if @timestamp do %>
-            <span class="text-xs text-base-content/40">{format_timestamp(@timestamp)}</span>
-          <% end %>
-          <%= if @batch_id do %>
-            <span class="badge badge-xs badge-ghost">batch</span>
-          <% end %>
-          <%= if @is_streaming do %>
-            <span class="badge badge-xs badge-info gap-1">
-              <span class="w-1 h-1 bg-info-content rounded-full animate-pulse"></span> typing
-            </span>
-          <% end %>
+    <div class={message_container_class(@role)}>
+      <%= if is_user_message?(@role) do %>
+        <!-- User message - highlighted with border -->
+        <div class="pl-3 border-l-2 border-primary">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-xs font-medium text-primary">{@label}</span>
+            <%= if @timestamp do %>
+              <span class="text-xs text-neutral-content/50">{format_timestamp(@timestamp)}</span>
+            <% end %>
+            <%= if @batch_id do %>
+              <span class="badge badge-xs badge-ghost">batch</span>
+            <% end %>
+          </div>
+          <div class="text-sm whitespace-pre-wrap break-words text-neutral-content">{@content}</div>
         </div>
-        
-    <!-- Content -->
-        <div class={bubble_content_class(@role)}>
-          <div class="text-sm whitespace-pre-wrap break-words">{@content}</div>
-          <%= if @is_streaming do %>
-            <span class="inline-block w-1.5 h-4 bg-info animate-pulse ml-0.5"></span>
+      <% else %>
+        <!-- System/Assistant message - plain text stream -->
+        <div class={if @role == :system, do: "text-neutral-content/60 text-xs", else: ""}>
+          <%= if @role == :system do %>
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-xs text-neutral-content/40">{@label}</span>
+            </div>
           <% end %>
+          <div class="text-xs whitespace-pre-wrap font-mono text-neutral-content">{@content}<%= if @is_streaming do %><span class="inline-block w-1.5 h-4 bg-info animate-pulse ml-0.5 align-middle"></span><% end %></div>
         </div>
-      </div>
+      <% end %>
     </div>
     """
   end
 
-  defp bubble_container_class(:user), do: "flex gap-3 justify-end"
-  defp bubble_container_class(_), do: "flex gap-3"
+  defp message_container_class(:user), do: "py-2"
+  defp message_container_class(:system), do: "py-1 opacity-70"
+  defp message_container_class(_), do: "py-1"
 
-  defp bubble_avatar_class(:system),
-    do:
-      "w-8 h-8 rounded-full bg-base-300 flex items-center justify-center text-base-content/60 flex-shrink-0"
-
-  defp bubble_avatar_class(:user),
-    do:
-      "w-8 h-8 rounded-full bg-primary flex items-center justify-center text-primary-content flex-shrink-0 order-last"
-
-  defp bubble_avatar_class(:assistant),
-    do:
-      "w-8 h-8 rounded-full bg-secondary flex items-center justify-center text-secondary-content flex-shrink-0"
-
-  defp bubble_avatar_class(_),
-    do:
-      "w-8 h-8 rounded-full bg-base-300 flex items-center justify-center text-base-content/60 flex-shrink-0"
-
-  defp bubble_label_class(:system), do: "text-xs font-medium text-base-content/60"
-  defp bubble_label_class(:user), do: "text-xs font-medium text-primary"
-  defp bubble_label_class(:assistant), do: "text-xs font-medium text-secondary"
-  defp bubble_label_class(_), do: "text-xs font-medium text-base-content/60"
-
-  defp bubble_content_class(:system),
-    do:
-      "bg-base-300/50 rounded-lg rounded-tl-none p-3 text-base-content/80 max-h-48 overflow-y-auto"
-
-  defp bubble_content_class(:user),
-    do: "bg-primary/10 rounded-lg rounded-tr-none p-3 text-base-content"
-
-  defp bubble_content_class(:assistant),
-    do:
-      "bg-neutral text-neutral-content/90 rounded-lg rounded-tl-none p-3 max-h-[500px] overflow-y-auto"
-
-  defp bubble_content_class(_), do: "bg-base-100 rounded-lg p-3"
+  defp is_user_message?(:user), do: true
+  defp is_user_message?("user"), do: true
+  defp is_user_message?(_), do: false
 
   defp format_timestamp(nil), do: ""
 
@@ -747,4 +829,11 @@ defmodule IpaWeb.Pod.AgentDetailLive do
   defp get_message_label(%{role: :user}), do: "User"
   defp get_message_label(%{role: "user"}), do: "User"
   defp get_message_label(_), do: "User"
+
+  # Check if agent is a planning agent
+  defp is_planning_agent?(%{agent_type: :planning}), do: true
+  defp is_planning_agent?(%{agent_type: :planning_agent}), do: true
+  defp is_planning_agent?(%{agent_type: "planning"}), do: true
+  defp is_planning_agent?(%{agent_type: "planning_agent"}), do: true
+  defp is_planning_agent?(_), do: false
 end

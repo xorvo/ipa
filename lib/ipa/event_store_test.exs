@@ -7,7 +7,8 @@ defmodule Ipa.EventStoreTest do
     test "creates a new stream with auto-generated UUID" do
       assert {:ok, stream_id} = EventStore.start_stream("task")
       assert is_binary(stream_id)
-      assert String.length(stream_id) == 36  # UUID format
+      # UUID format
+      assert String.length(stream_id) == 36
       assert EventStore.stream_exists?(stream_id)
     end
 
@@ -39,12 +40,13 @@ defmodule Ipa.EventStoreTest do
     end
 
     test "appends an event to a stream", %{stream_id: stream_id} do
-      assert {:ok, 1} = EventStore.append(
-        stream_id,
-        "task_created",
-        %{title: "My Task"},
-        actor_id: "user-123"
-      )
+      assert {:ok, 1} =
+               EventStore.append(
+                 stream_id,
+                 "task_created",
+                 %{title: "My Task"},
+                 actor_id: "user-123"
+               )
     end
 
     test "increments version for each event", %{stream_id: stream_id} do
@@ -54,15 +56,16 @@ defmodule Ipa.EventStoreTest do
     end
 
     test "stores all event metadata", %{stream_id: stream_id} do
-      assert {:ok, 1} = EventStore.append(
-        stream_id,
-        "task_created",
-        %{title: "Test"},
-        actor_id: "user-123",
-        correlation_id: "corr-456",
-        causation_id: "cause-789",
-        metadata: %{source: "api"}
-      )
+      assert {:ok, 1} =
+               EventStore.append(
+                 stream_id,
+                 "task_created",
+                 %{title: "Test"},
+                 actor_id: "user-123",
+                 correlation_id: "corr-456",
+                 causation_id: "cause-789",
+                 metadata: %{source: "api"}
+               )
 
       {:ok, [event]} = EventStore.read_stream(stream_id)
 
@@ -81,12 +84,14 @@ defmodule Ipa.EventStoreTest do
       assert {:ok, 2} = EventStore.append(stream_id, "event2", %{}, expected_version: 1)
 
       # Wrong expected version
-      assert {:error, :version_conflict} = EventStore.append(
-        stream_id,
-        "event3",
-        %{},
-        expected_version: 1  # Should be 2
-      )
+      assert {:error, :version_conflict} =
+               EventStore.append(
+                 stream_id,
+                 "event3",
+                 %{},
+                 # Should be 2
+                 expected_version: 1
+               )
     end
   end
 
@@ -118,12 +123,13 @@ defmodule Ipa.EventStoreTest do
         %{event_type: "event2", data: %{value: 2}, opts: []}
       ]
 
-      assert {:ok, 2} = EventStore.append_batch(
-        stream_id,
-        events,
-        actor_id: "system",
-        correlation_id: "batch-123"
-      )
+      assert {:ok, 2} =
+               EventStore.append_batch(
+                 stream_id,
+                 events,
+                 actor_id: "system",
+                 correlation_id: "batch-123"
+               )
 
       {:ok, stored_events} = EventStore.read_stream(stream_id)
       assert Enum.all?(stored_events, fn e -> e.actor_id == "system" end)
@@ -136,11 +142,12 @@ defmodule Ipa.EventStoreTest do
         %{event_type: "event2", data: %{}, opts: [actor_id: "user-2"]}
       ]
 
-      assert {:ok, 2} = EventStore.append_batch(
-        stream_id,
-        events,
-        actor_id: "system"
-      )
+      assert {:ok, 2} =
+               EventStore.append_batch(
+                 stream_id,
+                 events,
+                 actor_id: "system"
+               )
 
       {:ok, [event1, event2]} = EventStore.read_stream(stream_id)
       assert event1.actor_id == "user-1"
@@ -185,7 +192,8 @@ defmodule Ipa.EventStoreTest do
       EventStore.append(stream_id, "event1", %{})
 
       {:ok, events} = EventStore.read_stream(stream_id, event_types: ["event1"])
-      assert length(events) == 3  # 2 from setup + 2 new = 3 "event1" events
+      # 2 from setup + 2 new = 3 "event1" events
+      assert length(events) == 3
       assert Enum.all?(events, fn e -> e.event_type == "event1" end)
     end
   end
@@ -298,24 +306,28 @@ defmodule Ipa.EventStoreTest do
       EventStore.append(stream_id, "event1", %{})
 
       # Simulate two concurrent appends with same expected version
-      tasks = for i <- 1..10 do
-        Task.async(fn ->
-          EventStore.append(stream_id, "concurrent_event", %{value: i})
-        end)
-      end
+      tasks =
+        for i <- 1..10 do
+          Task.async(fn ->
+            EventStore.append(stream_id, "concurrent_event", %{value: i})
+          end)
+        end
 
       results = Enum.map(tasks, &Task.await/1)
-      successful = Enum.filter(results, fn
-        {:ok, _} -> true
-        _ -> false
-      end)
+
+      successful =
+        Enum.filter(results, fn
+          {:ok, _} -> true
+          _ -> false
+        end)
 
       # All should succeed since we're not using optimistic concurrency
       assert length(successful) == 10
 
       # Verify all events were stored
       {:ok, events} = EventStore.read_stream(stream_id)
-      assert length(events) == 11  # 1 initial + 10 concurrent
+      # 1 initial + 10 concurrent
+      assert length(events) == 11
     end
   end
 
@@ -332,15 +344,16 @@ defmodule Ipa.EventStoreTest do
       # Replay events to rebuild state
       {:ok, events} = EventStore.read_stream(stream_id)
 
-      state = Enum.reduce(events, %{phase: nil, title: nil, approved_count: 0}, fn event, acc ->
-        case event.event_type do
-          "task_created" -> %{acc | title: event.data.title, phase: :spec}
-          "spec_approved" -> %{acc | approved_count: acc.approved_count + 1}
-          "phase_transitioned" -> %{acc | phase: event.data.to}
-          "plan_approved" -> %{acc | approved_count: acc.approved_count + 1, phase: :executing}
-          _ -> acc
-        end
-      end)
+      state =
+        Enum.reduce(events, %{phase: nil, title: nil, approved_count: 0}, fn event, acc ->
+          case event.event_type do
+            "task_created" -> %{acc | title: event.data.title, phase: :spec}
+            "spec_approved" -> %{acc | approved_count: acc.approved_count + 1}
+            "phase_transitioned" -> %{acc | phase: event.data.to}
+            "plan_approved" -> %{acc | approved_count: acc.approved_count + 1, phase: :executing}
+            _ -> acc
+          end
+        end)
 
       assert state.title == "Build API"
       assert state.phase == :executing

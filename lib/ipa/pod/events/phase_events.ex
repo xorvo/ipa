@@ -58,7 +58,8 @@ defmodule Ipa.Pod.Events.TransitionRequested do
     if atom in @valid_phases do
       atom
     else
-      raise ArgumentError, "Invalid phase: #{inspect(phase)}, valid phases: #{inspect(@valid_phases)}"
+      raise ArgumentError,
+            "Invalid phase: #{inspect(phase)}, valid phases: #{inspect(@valid_phases)}"
     end
   end
 
@@ -116,7 +117,8 @@ defmodule Ipa.Pod.Events.TransitionApproved do
     if atom in @valid_phases do
       atom
     else
-      raise ArgumentError, "Invalid phase: #{inspect(phase)}, valid phases: #{inspect(@valid_phases)}"
+      raise ArgumentError,
+            "Invalid phase: #{inspect(phase)}, valid phases: #{inspect(@valid_phases)}"
     end
   end
 
@@ -174,7 +176,8 @@ defmodule Ipa.Pod.Events.PhaseChanged do
     if atom in @valid_phases do
       atom
     else
-      raise ArgumentError, "Invalid phase: #{inspect(phase)}, valid phases: #{inspect(@valid_phases)}"
+      raise ArgumentError,
+            "Invalid phase: #{inspect(phase)}, valid phases: #{inspect(@valid_phases)}"
     end
   end
 

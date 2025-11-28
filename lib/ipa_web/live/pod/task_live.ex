@@ -29,6 +29,9 @@ defmodule IpaWeb.Pod.TaskLive do
           # Subscribe to Pod.Manager for when pod is running
           Manager.subscribe(task_id)
 
+          # Subscribe to UI events from nested LiveViews (agent selection, etc.)
+          Phoenix.PubSub.subscribe(Ipa.PubSub, "task:#{task_id}:ui")
+
           # Auto-start pod if task is in an active phase and pod is not running
           # This ensures the task continues processing when viewed
           maybe_auto_start_pod(task_id, state.phase)
@@ -62,8 +65,58 @@ defmodule IpaWeb.Pod.TaskLive do
   end
 
   @impl true
-  def handle_params(_params, _uri, socket) do
-    {:noreply, socket}
+  def handle_params(params, _uri, socket) do
+    # Parse tab from URL params, default to :overview
+    tab = parse_tab(params["tab"])
+
+    # Parse selected agent from URL params (for agent detail modal)
+    selected_agent_id = params["agent"]
+
+    # Parse selected workstream from URL params
+    selected_workstream_id = params["workstream"]
+
+    {:noreply,
+     socket
+     |> assign(active_tab: tab)
+     |> assign(selected_agent_id: selected_agent_id)
+     |> assign(selected_workstream_id: selected_workstream_id)}
+  end
+
+  @valid_tabs ~w(overview workstreams agents communications events)a
+  defp parse_tab(nil), do: :overview
+
+  defp parse_tab(tab_str) when is_binary(tab_str) do
+    tab = String.to_existing_atom(tab_str)
+    if tab in @valid_tabs, do: tab, else: :overview
+  rescue
+    _ -> :overview
+  end
+
+  # Build URL with query params for state persistence
+  defp build_url(socket, updates) do
+    task_id = socket.assigns.task_id
+    current_tab = socket.assigns.active_tab
+    current_agent = socket.assigns[:selected_agent_id]
+    current_workstream = socket.assigns[:selected_workstream_id]
+
+    # Apply updates
+    tab = Keyword.get(updates, :tab, current_tab)
+    agent = Keyword.get(updates, :agent, current_agent)
+    workstream = Keyword.get(updates, :workstream, current_workstream)
+
+    # Build query params - only include non-nil values and non-default tab
+    params =
+      []
+      |> then(fn p -> if tab && tab != :overview, do: [{:tab, tab} | p], else: p end)
+      |> then(fn p -> if agent, do: [{:agent, agent} | p], else: p end)
+      |> then(fn p -> if workstream, do: [{:workstream, workstream} | p], else: p end)
+
+    if Enum.empty?(params) do
+      ~p"/pods/#{task_id}"
+    else
+      query = URI.encode_query(params)
+      "/pods/#{task_id}?#{query}"
+    end
   end
 
   # ============================================================================
@@ -91,6 +144,12 @@ defmodule IpaWeb.Pod.TaskLive do
          new_state.spec[:description] || new_state.spec["description"] ||
            socket.assigns.spec_description
      )}
+  end
+
+  # Handle agent selection from nested AgentPanelLive
+  # Updates URL to persist agent selection across page reloads
+  def handle_info({:select_agent, agent_id}, socket) do
+    {:noreply, push_patch(socket, to: build_url(socket, agent: agent_id))}
   end
 
   # State updates from State GenServer (when pod is running)
@@ -234,10 +293,10 @@ defmodule IpaWeb.Pod.TaskLive do
     end
   end
 
-  # Tab navigation
+  # Tab navigation - use push_patch to update URL
   @impl true
   def handle_event("switch_tab", %{"tab" => tab}, socket) do
-    {:noreply, assign(socket, active_tab: String.to_atom(tab))}
+    {:noreply, push_patch(socket, to: build_url(socket, tab: tab))}
   end
 
   # Spec approval
@@ -400,9 +459,10 @@ defmodule IpaWeb.Pod.TaskLive do
     end
   end
 
-  # Select workstream
+  # Select workstream - use push_patch to update URL
   def handle_event("select_workstream", %{"id" => id}, socket) do
-    {:noreply, assign(socket, selected_workstream_id: id)}
+    workstream_id = if id == "", do: nil, else: id
+    {:noreply, push_patch(socket, to: build_url(socket, workstream: workstream_id))}
   end
 
   # Event filtering
@@ -457,6 +517,28 @@ defmodule IpaWeb.Pod.TaskLive do
 
   def handle_event("hide_debug_modal", _params, socket) do
     {:noreply, assign(socket, show_debug_modal: false)}
+  end
+
+  # Open workspace in editor
+  def handle_event("open_in_editor", %{"path" => path}, socket) do
+    case Application.get_env(:ipa, :editor_command) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "No editor configured. Set :editor_command in config.")}
+
+      editor when is_binary(editor) ->
+        # Run editor command in background (don't block LiveView)
+        Task.start(fn ->
+          case System.cmd(editor, [path], stderr_to_stdout: true) do
+            {_output, 0} ->
+              Logger.info("Opened #{path} in #{editor}")
+
+            {output, exit_code} ->
+              Logger.warning("Failed to open editor: exit code #{exit_code}, output: #{output}")
+          end
+        end)
+
+        {:noreply, put_flash(socket, :info, "Opening in #{editor}...")}
+    end
   end
 
   @impl true
@@ -543,7 +625,7 @@ defmodule IpaWeb.Pod.TaskLive do
           <% :agents -> %>
             {live_render(@socket, IpaWeb.Pod.AgentPanelLive,
               id: "agent-panel",
-              session: %{"task_id" => @task_id}
+              session: %{"task_id" => @task_id, "selected_agent_id" => @selected_agent_id}
             )}
           <% :communications -> %>
             <.communications_tab state={@state} task_id={@task_id} message_input={@message_input} />
@@ -1124,19 +1206,34 @@ defmodule IpaWeb.Pod.TaskLive do
     """
   end
 
-  # Copyable path component with click-to-copy
+  # Copyable path component with click-to-copy and open in editor
   defp copyable_path(assigns) do
+    editor = Application.get_env(:ipa, :editor_command)
+    assigns = assign(assigns, :editor, editor)
+
     ~H"""
     <div class="bg-base-200 rounded-lg p-3">
       <div class="flex items-center justify-between gap-2">
         <code class="text-xs break-all flex-1">{@path}</code>
-        <button
-          phx-click={JS.dispatch("phx:copy", to: "#path-#{hash_path(@path)}")}
-          class="btn btn-ghost btn-xs tooltip tooltip-left"
-          data-tip="Copy path"
-        >
-          <.icon name="hero-clipboard-document" class="w-4 h-4" />
-        </button>
+        <div class="flex items-center gap-1">
+          <%= if @editor do %>
+            <button
+              phx-click="open_in_editor"
+              phx-value-path={@path}
+              class="btn btn-ghost btn-xs tooltip tooltip-left"
+              data-tip={"Open in #{@editor}"}
+            >
+              <.icon name="hero-code-bracket" class="w-4 h-4" />
+            </button>
+          <% end %>
+          <button
+            phx-click={JS.dispatch("phx:copy", to: "#path-#{hash_path(@path)}")}
+            class="btn btn-ghost btn-xs tooltip tooltip-left"
+            data-tip="Copy path"
+          >
+            <.icon name="hero-clipboard-document" class="w-4 h-4" />
+          </button>
+        </div>
       </div>
       <input type="hidden" id={"path-#{hash_path(@path)}"} value={@path} />
       <p class="text-xs text-base-content/60 mt-2">{@label}</p>

@@ -13,6 +13,7 @@ defmodule Ipa.Agent.Options do
   - `:timeout_ms` - Timeout in milliseconds (default: 3_600_000 = 1 hour)
   - `:permission_mode` - Permission mode for file operations (:accept_edits, :bypass_permissions)
   - `:model` - Claude model to use (optional)
+  - `:interactive` - Whether agent supports multi-turn conversation (default: true)
   """
 
   defstruct [
@@ -21,7 +22,8 @@ defmodule Ipa.Agent.Options do
     :max_turns,
     :timeout_ms,
     :permission_mode,
-    :model
+    :model,
+    interactive: true
   ]
 
   @type t :: %__MODULE__{
@@ -30,7 +32,8 @@ defmodule Ipa.Agent.Options do
           max_turns: non_neg_integer() | nil,
           timeout_ms: non_neg_integer() | nil,
           permission_mode: :accept_edits | :bypass_permissions | nil,
-          model: String.t() | nil
+          model: String.t() | nil,
+          interactive: boolean()
         }
 
   @doc """

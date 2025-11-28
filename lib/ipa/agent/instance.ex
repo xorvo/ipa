@@ -4,17 +4,26 @@ defmodule Ipa.Agent.Instance do
 
   Each agent instance:
   - Registers itself in PodRegistry for lookup
-  - Spawns a Task to run the Claude SDK query
+  - Uses ClaudeAgentSdkTs.Session for multi-turn conversations
   - Processes streaming messages and updates internal state
   - Records lifecycle events to Event Store (source of truth)
   - Broadcasts streaming updates to PubSub (for LiveView)
   - Handles interruption and cleanup
 
+  ## Interactive Mode
+
+  When `interactive: true` (default), the agent:
+  - Runs the initial prompt
+  - Transitions to :awaiting_input status when complete
+  - Waits for user messages via `send_message/2`
+  - Can be marked done via `mark_done/1`
+
   ## State
 
   The instance maintains rich state including:
   - Agent identity (id, type, task_id, workstream_id)
-  - Execution status (:initializing, :running, :completed, :failed, :interrupted)
+  - Execution status (:initializing, :running, :awaiting_input, :completed, :failed, :interrupted)
+  - Session state (Claude SDK Session PID)
   - Streaming output (current_response, tool_calls, messages)
   - Timing (started_at, completed_at)
 
@@ -22,6 +31,7 @@ defmodule Ipa.Agent.Instance do
 
   Lifecycle events are recorded to the Event Store:
   - `agent_started` - When agent begins execution
+  - `agent_awaiting_input` - When agent is waiting for user input
   - `agent_completed` - When agent finishes successfully
   - `agent_failed` - When agent encounters an error
   - `agent_interrupted` - When agent is manually stopped
@@ -50,12 +60,14 @@ defmodule Ipa.Agent.Instance do
     :started_at,
     :completed_at,
     :query_task,
+    :session,
     :current_response,
     :tool_calls,
     :messages,
     :result,
     :error,
-    :context
+    :context,
+    interactive: true
   ]
 
   @type t :: %__MODULE__{
@@ -65,16 +77,19 @@ defmodule Ipa.Agent.Instance do
           workstream_id: String.t() | nil,
           workspace_path: String.t() | nil,
           prompt: String.t(),
-          status: :initializing | :running | :completed | :failed | :interrupted,
+          status:
+            :initializing | :running | :awaiting_input | :completed | :failed | :interrupted,
           started_at: DateTime.t(),
           completed_at: DateTime.t() | nil,
           query_task: Task.t() | nil,
+          session: pid() | nil,
           current_response: String.t(),
           tool_calls: [map()],
           messages: [map()],
           result: term(),
           error: String.t() | nil,
-          context: map()
+          context: map(),
+          interactive: boolean()
         }
 
   # ============================================================================
@@ -119,6 +134,34 @@ defmodule Ipa.Agent.Instance do
     end
   end
 
+  @doc """
+  Sends a message to an interactive agent.
+
+  The agent must be in :awaiting_input status. The message will be sent to the
+  Claude session and the agent will transition to :running while processing.
+  """
+  @spec send_message(String.t(), String.t()) :: :ok | {:error, term()}
+  def send_message(agent_id, message) do
+    case GenServer.whereis(via_tuple(agent_id)) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:send_message, message}, 300_000)
+    end
+  end
+
+  @doc """
+  Marks an interactive agent as done/completed.
+
+  This can be called when the user is satisfied with the agent's work and doesn't
+  need to continue the conversation. The agent will transition to :completed status.
+  """
+  @spec mark_done(String.t(), String.t() | nil) :: :ok | {:error, term()}
+  def mark_done(agent_id, reason \\ nil) do
+    case GenServer.whereis(via_tuple(agent_id)) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:mark_done, reason})
+    end
+  end
+
   # ============================================================================
   # GenServer Callbacks
   # ============================================================================
@@ -139,6 +182,11 @@ defmodule Ipa.Agent.Instance do
     # Generate prompt and options from the agent type module
     prompt = agent_type.generate_prompt(context)
     options = agent_type.configure_options(context)
+    interactive = Map.get(options, :interactive, true)
+
+    # Start a Claude Session for multi-turn conversations
+    session_opts = convert_options_to_session_opts(options)
+    {:ok, session} = ClaudeAgentSdkTs.Session.start_link(session_opts)
 
     state = %__MODULE__{
       agent_id: agent_id,
@@ -149,10 +197,12 @@ defmodule Ipa.Agent.Instance do
       prompt: prompt,
       status: :initializing,
       started_at: DateTime.utc_now(),
+      session: session,
       current_response: "",
       tool_calls: [],
       messages: [],
-      context: context
+      context: context,
+      interactive: interactive
     }
 
     # Schedule notification and query to run after init completes
@@ -160,7 +210,7 @@ defmodule Ipa.Agent.Instance do
     # NOTE: The agent_started event is already recorded by Pod.Manager through AgentCommands
     # when it starts this agent. We only need to broadcast the PubSub notification here.
     send(self(), :notify_agent_started)
-    send(self(), {:run_query, prompt, options})
+    send(self(), {:run_query, prompt})
 
     {:ok, state}
   end
@@ -176,14 +226,23 @@ defmodule Ipa.Agent.Instance do
   end
 
   @impl true
-  def handle_info({:run_query, prompt, options}, state) do
-    # Spawn a Task to run the Claude SDK query
+  def handle_info({:run_query, prompt}, state) do
+    # Record the initial prompt as the first message in conversation history
+    # This ensures the prompt is persisted and visible in the conversation view
+    record_lifecycle_event(state, "agent_message_sent", %{
+      agent_id: state.agent_id,
+      message: prompt,
+      sent_by: "system",
+      role: :system
+    })
+
+    # Spawn a Task to run the Claude SDK Session query
     # The Task sends messages back to this GenServer as they arrive
     parent = self()
 
     task =
       Task.async(fn ->
-        run_streaming_query(prompt, options, parent)
+        run_session_query(state.session, prompt, parent)
       end)
 
     {:noreply, %{state | status: :running, query_task: task}}
@@ -198,7 +257,8 @@ defmodule Ipa.Agent.Instance do
 
   # Handle Task completion
   @impl true
-  def handle_info({ref, result}, state) when state.query_task != nil and ref == state.query_task.ref do
+  def handle_info({ref, result}, state)
+      when state.query_task != nil and ref == state.query_task.ref do
     # Task completed - flush the monitor
     Process.demonitor(ref, [:flush])
 
@@ -259,11 +319,17 @@ defmodule Ipa.Agent.Instance do
       Task.shutdown(state.query_task, :brutal_kill)
     end
 
+    # Stop the session
+    if state.session do
+      ClaudeAgentSdkTs.Session.stop(state.session)
+    end
+
     new_state = %{
       state
       | status: :interrupted,
         completed_at: DateTime.utc_now(),
-        query_task: nil
+        query_task: nil,
+        session: nil
     }
 
     # Record to Event Store (source of truth)
@@ -279,6 +345,90 @@ defmodule Ipa.Agent.Instance do
   end
 
   @impl true
+  def handle_call({:send_message, message}, _from, state) do
+    if state.status != :awaiting_input do
+      {:reply, {:error, :not_awaiting_input}, state}
+    else
+      Logger.info("Sending message to agent session",
+        agent_id: state.agent_id,
+        message_preview: String.slice(message, 0, 50)
+      )
+
+      # Reset current_response for the new turn
+      state = %{state | status: :running, current_response: ""}
+
+      # Spawn a Task to run the message through the session
+      parent = self()
+
+      task =
+        Task.async(fn ->
+          run_session_query(state.session, message, parent)
+        end)
+
+      {:reply, :ok, %{state | query_task: task}}
+    end
+  end
+
+  @impl true
+  def handle_call({:mark_done, reason}, _from, state) do
+    if state.status in [:completed, :failed, :interrupted] do
+      {:reply, {:error, :already_terminal}, state}
+    else
+      Logger.info("Marking agent as done",
+        agent_id: state.agent_id,
+        reason: reason
+      )
+
+      # Cancel any running task
+      if state.query_task do
+        Task.shutdown(state.query_task, :brutal_kill)
+      end
+
+      # Stop the session
+      if state.session do
+        ClaudeAgentSdkTs.Session.stop(state.session)
+      end
+
+      new_state = %{
+        state
+        | status: :completed,
+          completed_at: DateTime.utc_now(),
+          query_task: nil,
+          session: nil
+      }
+
+      # Record to Event Store
+      record_lifecycle_event(new_state, "agent_marked_done", %{
+        agent_id: state.agent_id,
+        marked_by: "user",
+        reason: reason
+      })
+
+      # Call the agent type's completion handler (e.g., to process plan files)
+      result = %{workspace: state.workspace_path, response: state.current_response}
+
+      case state.agent_type.handle_completion(result, state.context) do
+        :ok ->
+          Logger.debug("Agent completion handler succeeded", agent_id: state.agent_id)
+
+        {:error, handler_reason} ->
+          Logger.warning("Agent completion handler failed",
+            agent_id: state.agent_id,
+            error: inspect(handler_reason)
+          )
+      end
+
+      # Notify Pod.Manager of completion
+      Ipa.Pod.Manager.notify_agent_completed(state.task_id, state.agent_id, result)
+
+      # Notify via PubSub
+      notify_lifecycle(new_state, :agent_completed)
+
+      {:reply, :ok, new_state}
+    end
+  end
+
+  @impl true
   def terminate(reason, state) do
     Logger.info("Agent instance terminating",
       agent_id: state.agent_id,
@@ -288,6 +438,15 @@ defmodule Ipa.Agent.Instance do
     # Cancel any running query task
     if state.query_task do
       Task.shutdown(state.query_task, :brutal_kill)
+    end
+
+    # Stop the session
+    if state.session do
+      try do
+        ClaudeAgentSdkTs.Session.stop(state.session)
+      rescue
+        _ -> :ok
+      end
     end
 
     :ok
@@ -301,46 +460,50 @@ defmodule Ipa.Agent.Instance do
     {:via, Registry, {Ipa.PodRegistry, {:agent, agent_id}}}
   end
 
-  defp run_streaming_query(prompt, options, parent) do
-    try do
-      # Convert options to ClaudeAgentSdkTs format
-      claude_opts = convert_options_to_claude_agent_sdk(options)
+  defp run_session_query(session, prompt, parent) do
+    # Use Session's stream/4 for streaming responses with conversation history
+    ClaudeAgentSdkTs.Session.stream(session, prompt, [], fn message ->
+      send(parent, {:stream_message, message})
+    end)
+    |> case do
+      :ok ->
+        {:ok, :completed}
 
-      # Stream query results back to the parent GenServer
-      # ClaudeAgentSdkTs.stream/3 uses a callback for streaming and returns :ok when done
-      # Messages are sent via the callback, so we don't need to enumerate anything
-      result = ClaudeAgentSdkTs.stream(prompt, claude_opts, fn message ->
-        send(parent, {:stream_message, message})
-      end)
+      {:ok, response} ->
+        {:ok, response}
 
-      case result do
-        :ok ->
-          {:ok, :completed}
-
-        {:ok, response} ->
-          {:ok, response}
-
-        {:error, reason} ->
-          {:error, reason}
-
-        other ->
-          # Handle unexpected return values gracefully
-          Logger.warning("Unexpected return from ClaudeAgentSdkTs.stream: #{inspect(other)}")
-          {:ok, other}
-      end
-    rescue
-      error ->
-        {:error, {error, __STACKTRACE__}}
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  defp convert_options_to_claude_agent_sdk(options) do
-    # Convert from Ipa.Agent.Options struct to ClaudeAgentSdkTs options keyword list
-    base_opts = [
-      cwd: options.cwd,
-      max_turns: options.max_turns,
-      timeout: options.timeout_ms
-    ]
+  defp convert_options_to_session_opts(options) do
+    # Convert from Ipa.Agent.Options struct to Session start_link options
+    base_opts = []
+
+    # Add cwd if present
+    base_opts =
+      if options.cwd do
+        Keyword.put(base_opts, :cwd, options.cwd)
+      else
+        base_opts
+      end
+
+    # Add max_turns if present
+    base_opts =
+      if options.max_turns do
+        Keyword.put(base_opts, :max_turns, options.max_turns)
+      else
+        base_opts
+      end
+
+    # Add timeout if present
+    base_opts =
+      if options.timeout_ms do
+        Keyword.put(base_opts, :timeout, options.timeout_ms)
+      else
+        base_opts
+      end
 
     # Add allowed_tools if present
     base_opts =
@@ -386,7 +549,12 @@ defmodule Ipa.Agent.Instance do
 
         # Broadcast streaming data via PubSub (ephemeral)
         broadcast_stream(state, :tool_start, %{tool_name: tool_name, args: args})
-        %{state | tool_calls: [tool_call | state.tool_calls], messages: [message | state.messages]}
+
+        %{
+          state
+          | tool_calls: [tool_call | state.tool_calls],
+            messages: [message | state.messages]
+        }
 
       {:tool_complete, tool_name, result} ->
         tool_calls = update_tool_call_result(state.tool_calls, tool_name, result)
@@ -403,8 +571,49 @@ defmodule Ipa.Agent.Instance do
   end
 
   defp handle_agent_success(state, _final_messages) do
-    Logger.info("Agent completed successfully", agent_id: state.agent_id)
+    Logger.info("Agent turn completed", agent_id: state.agent_id, interactive: state.interactive)
 
+    # For interactive agents, transition to awaiting_input
+    # For non-interactive agents, complete the agent
+    if state.interactive do
+      handle_interactive_turn_complete(state)
+    else
+      handle_final_completion(state)
+    end
+  end
+
+  # Handle turn completion for interactive agents - transition to awaiting_input
+  defp handle_interactive_turn_complete(state) do
+    new_state = %{
+      state
+      | status: :awaiting_input,
+        query_task: nil
+    }
+
+    # Record agent's response to conversation history
+    # This stores the agent's output so it appears in the conversation
+    if state.current_response != "" do
+      record_lifecycle_event(new_state, "agent_response_received", %{
+        agent_id: state.agent_id,
+        response: state.current_response
+      })
+    end
+
+    # Record to Event Store
+    record_lifecycle_event(new_state, "agent_awaiting_input", %{
+      agent_id: state.agent_id,
+      prompt_for_user: nil,
+      current_output: state.current_response
+    })
+
+    # Notify via PubSub
+    notify_lifecycle(new_state, :agent_awaiting_input)
+
+    new_state
+  end
+
+  # Handle final completion for non-interactive agents
+  defp handle_final_completion(state) do
     # Call the agent type's completion handler
     result = %{workspace: state.workspace_path, response: state.current_response}
 
@@ -419,14 +628,23 @@ defmodule Ipa.Agent.Instance do
             agent_id: state.agent_id,
             error: inspect(reason)
           )
+
           {:error, reason}
       end
 
     new_state = %{
       state
       | status: :completed,
-        completed_at: DateTime.utc_now()
+        completed_at: DateTime.utc_now(),
+        query_task: nil
     }
+
+    # Stop the session for non-interactive agents
+    if state.session do
+      ClaudeAgentSdkTs.Session.stop(state.session)
+    end
+
+    new_state = %{new_state | session: nil}
 
     # Calculate duration
     duration_ms =
@@ -533,6 +751,7 @@ defmodule Ipa.Agent.Instance do
           agent_id: state.agent_id,
           task_id: state.task_id
         )
+
         :ok
 
       {:error, reason} ->
@@ -541,6 +760,7 @@ defmodule Ipa.Agent.Instance do
           task_id: state.task_id,
           error: inspect(reason)
         )
+
         {:error, reason}
     end
   end
@@ -551,9 +771,14 @@ defmodule Ipa.Agent.Instance do
 
   # Broadcast streaming data (ephemeral, for LiveView real-time updates)
   defp broadcast_stream(state, event_type, data) do
+    topic = "agent:#{state.agent_id}:stream"
+    # Only log occasionally to avoid spam
+    if event_type != :text_delta or rem(:erlang.unique_integer([:positive]), 20) == 0 do
+      Logger.info("Instance broadcasting #{event_type} to #{topic}, agent=#{state.agent_id}")
+    end
     Phoenix.PubSub.broadcast(
       Ipa.PubSub,
-      "agent:#{state.agent_id}:stream",
+      topic,
       {event_type, state.agent_id, data}
     )
   end

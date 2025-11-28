@@ -99,5 +99,12 @@ defmodule Ipa.Pod.State.Projector do
   defp agent_event?(%Ipa.Pod.Events.AgentStarted{}), do: true
   defp agent_event?(%Ipa.Pod.Events.AgentCompleted{}), do: true
   defp agent_event?(%Ipa.Pod.Events.AgentFailed{}), do: true
+  defp agent_event?(%Ipa.Pod.Events.AgentInterrupted{}), do: true
+  defp agent_event?(%Ipa.Pod.Events.AgentPendingStart{}), do: true
+  defp agent_event?(%Ipa.Pod.Events.AgentManuallyStarted{}), do: true
+  defp agent_event?(%Ipa.Pod.Events.AgentAwaitingInput{}), do: true
+  defp agent_event?(%Ipa.Pod.Events.AgentMessageSent{}), do: true
+  defp agent_event?(%Ipa.Pod.Events.AgentResponseReceived{}), do: true
+  defp agent_event?(%Ipa.Pod.Events.AgentMarkedDone{}), do: true
   defp agent_event?(_), do: false
 end

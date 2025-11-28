@@ -33,7 +33,8 @@ defmodule Ipa.Agent do
 
   @type agent_id :: String.t()
   @type task_id :: String.t()
-  @type message_type :: :text_delta | :tool_use_start | :tool_complete | :message_start | :message_stop
+  @type message_type ::
+          :text_delta | :tool_use_start | :tool_complete | :message_start | :message_stop
 
   # ============================================================================
   # Behaviour Callbacks
@@ -168,6 +169,46 @@ defmodule Ipa.Agent do
   @spec interrupt(agent_id()) :: :ok | {:error, :not_found}
   def interrupt(agent_id) when is_binary(agent_id) do
     Ipa.Agent.Instance.interrupt(agent_id)
+  end
+
+  @doc """
+  Sends a message to an interactive agent.
+
+  The agent must be in :awaiting_input status. The message will be sent to the
+  Claude session and the agent will transition to :running while processing.
+
+  ## Parameters
+    - `agent_id` - Agent ID
+    - `message` - The message to send
+
+  ## Returns
+    - `:ok` - Message sent
+    - `{:error, :not_found}` - Agent not found
+    - `{:error, :not_awaiting_input}` - Agent is not waiting for input
+  """
+  @spec send_message(agent_id(), String.t()) :: :ok | {:error, term()}
+  def send_message(agent_id, message) when is_binary(agent_id) and is_binary(message) do
+    Ipa.Agent.Instance.send_message(agent_id, message)
+  end
+
+  @doc """
+  Marks an interactive agent as done/completed.
+
+  This can be called when the user is satisfied with the agent's work and doesn't
+  need to continue the conversation. The agent will transition to :completed status.
+
+  ## Parameters
+    - `agent_id` - Agent ID
+    - `reason` - Optional reason for completion
+
+  ## Returns
+    - `:ok` - Agent marked done
+    - `{:error, :not_found}` - Agent not found
+    - `{:error, :already_terminal}` - Agent is already completed/failed/interrupted
+  """
+  @spec mark_done(agent_id(), String.t() | nil) :: :ok | {:error, term()}
+  def mark_done(agent_id, reason \\ nil) when is_binary(agent_id) do
+    Ipa.Agent.Instance.mark_done(agent_id, reason)
   end
 
   @doc """

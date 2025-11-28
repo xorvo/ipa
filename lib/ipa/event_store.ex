@@ -280,6 +280,7 @@ defmodule Ipa.EventStore do
           case %Event{} |> Event.changeset(event_attrs) |> Repo.insert() do
             {:ok, inserted_event} ->
               {:cont, {new_version, [decode_event(inserted_event) | inserted_events]}}
+
             {:error, reason} ->
               {:halt, {:error, reason}}
           end

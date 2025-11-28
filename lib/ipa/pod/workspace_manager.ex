@@ -309,9 +309,7 @@ defmodule Ipa.Pod.WorkspaceManager do
                 Logger.info("[WorkspaceManager] Injected CLAUDE.md to #{claude_md_path}")
 
               {:error, reason} ->
-                Logger.warning(
-                  "[WorkspaceManager] Failed to write CLAUDE.md: #{inspect(reason)}"
-                )
+                Logger.warning("[WorkspaceManager] Failed to write CLAUDE.md: #{inspect(reason)}")
             end
           end
 
@@ -546,7 +544,10 @@ defmodule Ipa.Pod.WorkspaceManager do
       # Write metadata files
       task_spec_path = Path.join([workspace_path, ".ipa", "task_spec.json"])
 
-      File.write!(task_spec_path, Jason.encode!(%{task_id: task_id, agent_id: agent_id}, pretty: true))
+      File.write!(
+        task_spec_path,
+        Jason.encode!(%{task_id: task_id, agent_id: agent_id}, pretty: true)
+      )
 
       workspace_config_path = Path.join([workspace_path, ".ipa", "workspace_config.json"])
       File.write!(workspace_config_path, Jason.encode!(config, pretty: true))

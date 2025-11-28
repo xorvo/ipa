@@ -332,7 +332,10 @@ defmodule Ipa.PodSupervisor do
     case Ipa.PodRegistry.lookup(task_id) do
       {:ok, pid, _metadata} ->
         unless Process.alive?(pid) do
-          Logger.info("Cleaning up stale registry entry for pod #{task_id} (dead process: #{inspect(pid)})")
+          Logger.info(
+            "Cleaning up stale registry entry for pod #{task_id} (dead process: #{inspect(pid)})"
+          )
+
           # The Registry should clean up automatically when the process dies,
           # but we can help by unregistering explicitly
           Ipa.PodRegistry.unregister(task_id)
@@ -344,7 +347,6 @@ defmodule Ipa.PodSupervisor do
         :ok
     end
   end
-
 
   @doc """
   Returns the child specification for the PodSupervisor.

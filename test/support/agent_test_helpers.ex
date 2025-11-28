@@ -118,8 +118,7 @@ defmodule Ipa.Test.AgentTestHelpers do
       task: %{
         task_id: task_id,
         title: Keyword.get(opts, :title, "Test Task"),
-        workstreams:
-          Map.new(completed_workstreams, fn ws -> {ws.workstream_id, ws} end)
+        workstreams: Map.new(completed_workstreams, fn ws -> {ws.workstream_id, ws} end)
       }
     }
   end
