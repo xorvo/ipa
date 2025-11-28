@@ -116,27 +116,26 @@ defmodule IpaWeb.DashboardLive do
               <p class="text-sm text-base-content/60 mt-1">Intelligent Process Automation</p>
             </div>
             <button phx-click="show_create_modal" class="btn btn-primary">
-              <.icon name="hero-plus" class="w-5 h-5" />
-              New Task
+              <.icon name="hero-plus" class="w-5 h-5" /> New Task
             </button>
           </div>
         </div>
       </header>
-
-      <!-- Stats Bar -->
+      
+    <!-- Stats Bar -->
       <div class="bg-base-100 border-b border-base-300">
         <div class="max-w-7xl mx-auto px-4 py-4">
           <div class="flex items-center gap-8">
             <div class="flex items-center gap-2">
-              <div class="badge badge-lg badge-primary"><%= length(@tasks) %></div>
+              <div class="badge badge-lg badge-primary">{length(@tasks)}</div>
               <span class="text-sm text-base-content/60">Total Tasks</span>
             </div>
             <div class="flex items-center gap-2">
-              <div class="badge badge-lg badge-success"><%= count_running_pods(@tasks) %></div>
+              <div class="badge badge-lg badge-success">{count_running_pods(@tasks)}</div>
               <span class="text-sm text-base-content/60">Running Pods</span>
             </div>
             <div class="flex items-center gap-2">
-              <div class="badge badge-lg badge-info"><%= total_workstreams(@tasks) %></div>
+              <div class="badge badge-lg badge-info">{total_workstreams(@tasks)}</div>
               <span class="text-sm text-base-content/60">Workstreams</span>
             </div>
             <div class="flex-1"></div>
@@ -150,14 +149,13 @@ defmodule IpaWeb.DashboardLive do
               <span class="text-sm">Show completed</span>
             </label>
             <button phx-click="refresh" class="btn btn-ghost btn-sm">
-              <.icon name="hero-arrow-path" class="w-4 h-4" />
-              Refresh
+              <.icon name="hero-arrow-path" class="w-4 h-4" /> Refresh
             </button>
           </div>
         </div>
       </div>
-
-      <!-- Task List -->
+      
+    <!-- Task List -->
       <main class="max-w-7xl mx-auto px-4 py-6">
         <%= if Enum.empty?(@tasks) do %>
           <div class="text-center py-16">
@@ -176,28 +174,21 @@ defmodule IpaWeb.DashboardLive do
           </div>
         <% end %>
       </main>
-
-      <!-- Create Task Modal -->
+      
+    <!-- Create Task Modal -->
       <%= if @show_create_modal do %>
         <div class="modal modal-open">
-          <div class="modal-box">
-            <h3 class="font-bold text-lg">Create New Task</h3>
+          <div class="modal-box max-w-md">
             <form phx-submit="create_task" phx-change="update_title">
-              <div class="py-4">
-                <label class="label">
-                  <span class="label-text">Task Title</span>
-                </label>
+              <div class="flex gap-2">
                 <input
                   type="text"
                   name="title"
-                  placeholder="Enter task title..."
-                  class="input input-bordered w-full"
+                  placeholder="What needs to be done?"
+                  class="input input-bordered flex-1 focus:outline-none focus:border-primary/30"
                   value={@new_task_title}
                   autofocus
                 />
-              </div>
-              <div class="modal-action">
-                <button type="button" phx-click="hide_create_modal" class="btn btn-ghost">Cancel</button>
                 <button type="submit" class="btn btn-primary">Create</button>
               </div>
             </form>
@@ -216,10 +207,12 @@ defmodule IpaWeb.DashboardLive do
         <div class="flex items-start justify-between">
           <div class="flex-1">
             <.link navigate={~p"/pods/#{@task.task_id}"} class="hover:underline">
-              <h2 class="card-title text-lg"><%= @task.title %></h2>
+              <h2 class="card-title text-lg">{@task.title}</h2>
             </.link>
             <p class="text-sm text-base-content/60 mt-1">
-              <code class="bg-base-200 px-1 rounded text-xs"><%= String.slice(@task.task_id, 0, 20) %>...</code>
+              <code class="bg-base-200 px-1 rounded text-xs">
+                {String.slice(@task.task_id, 0, 20)}...
+              </code>
             </p>
           </div>
 
@@ -237,12 +230,12 @@ defmodule IpaWeb.DashboardLive do
           <div class="flex items-center gap-4 text-sm text-base-content/60">
             <span class="flex items-center gap-1">
               <.icon name="hero-queue-list" class="w-4 h-4" />
-              <%= @task.workstream_count %> workstreams
+              {@task.workstream_count} workstreams
             </span>
             <%= if @task.unread_count > 0 do %>
               <span class="flex items-center gap-1 text-warning">
                 <.icon name="hero-bell" class="w-4 h-4" />
-                <%= @task.unread_count %> unread
+                {@task.unread_count} unread
               </span>
             <% end %>
           </div>
@@ -280,7 +273,7 @@ defmodule IpaWeb.DashboardLive do
 
     ~H"""
     <span class={"badge #{@color}"}>
-      <%= format_phase(@phase) %>
+      {format_phase(@phase)}
     </span>
     """
   end

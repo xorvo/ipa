@@ -183,7 +183,14 @@ defmodule IpaWeb.Pod.TaskLive do
 
       "phase_changed" ->
         to_phase = normalize_phase(event.data[:to_phase])
-        %{state | phase: to_phase, pending_transitions: [], version: event.version, updated_at: event.inserted_at}
+
+        %{
+          state
+          | phase: to_phase,
+            pending_transitions: [],
+            version: event.version,
+            updated_at: event.inserted_at
+        }
 
       _ ->
         # For other event types, do a full reload to ensure consistency
@@ -480,20 +487,19 @@ defmodule IpaWeb.Pod.TaskLive do
                 class="btn btn-sm btn-outline gap-1"
                 title="View raw pod state"
               >
-                <.icon name="hero-code-bracket" class="w-4 h-4" />
-                Debug
+                <.icon name="hero-code-bracket" class="w-4 h-4" /> Debug
               </button>
               <.pod_control_button task_id={@task_id} />
             </div>
           </div>
         </div>
       </header>
-
+      
     <!-- Phase Progress Indicator -->
       <div class="bg-base-100 border-b border-base-300 px-8 py-3">
         <.phase_progress_indicator current_phase={@state.phase} />
       </div>
-
+      
     <!-- Tab Navigation -->
       <div class="bg-base-100 border-b border-base-300">
         <div class="max-w-7xl mx-auto px-4">
@@ -521,7 +527,7 @@ defmodule IpaWeb.Pod.TaskLive do
           </nav>
         </div>
       </div>
-
+      
     <!-- Main Content -->
       <main class="max-w-7xl mx-auto px-4 py-6">
         <%= case @active_tab do %>
@@ -535,10 +541,10 @@ defmodule IpaWeb.Pod.TaskLive do
           <% :workstreams -> %>
             <.workstreams_tab state={@state} selected_id={@selected_workstream_id} />
           <% :agents -> %>
-            <%= live_render(@socket, IpaWeb.Pod.AgentPanelLive,
+            {live_render(@socket, IpaWeb.Pod.AgentPanelLive,
               id: "agent-panel",
               session: %{"task_id" => @task_id}
-            ) %>
+            )}
           <% :communications -> %>
             <.communications_tab state={@state} task_id={@task_id} message_input={@message_input} />
           <% :events -> %>
@@ -549,8 +555,8 @@ defmodule IpaWeb.Pod.TaskLive do
             />
         <% end %>
       </main>
-
-      <!-- Debug Modal -->
+      
+    <!-- Debug Modal -->
       <%= if @show_debug_modal do %>
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
           <!-- Backdrop click handler -->
@@ -559,8 +565,7 @@ defmodule IpaWeb.Pod.TaskLive do
           <div class="relative bg-base-100 rounded-lg shadow-xl w-full max-w-4xl max-h-[80vh] flex flex-col">
             <div class="flex items-center justify-between p-4 border-b border-base-300">
               <h3 class="text-lg font-semibold flex items-center gap-2">
-                <.icon name="hero-code-bracket" class="w-5 h-5" />
-                Raw Pod State
+                <.icon name="hero-code-bracket" class="w-5 h-5" /> Raw Pod State
               </h3>
               <button phx-click="hide_debug_modal" class="btn btn-ghost btn-sm btn-circle">
                 <.icon name="hero-x-mark" class="w-5 h-5" />
@@ -676,6 +681,28 @@ defmodule IpaWeb.Pod.TaskLive do
   defp overview_tab(assigns) do
     ~H"""
     <div class="space-y-6">
+      <!-- Pending Transition Banner -->
+      <%= if pending_transition = get_pending_transition(@state) do %>
+        <div class="flex items-center justify-between p-4 bg-warning/10 rounded-lg border border-warning/30">
+          <div class="flex items-center gap-3">
+            <div class="bg-warning/20 p-2 rounded-lg">
+              <.icon name="hero-arrow-right-circle" class="w-5 h-5 text-warning" />
+            </div>
+            <div>
+              <span class="text-sm text-base-content/70">Ready to move to</span>
+              <span class="font-medium ml-1">{format_phase(pending_transition.to_phase)}</span>
+            </div>
+          </div>
+          <button
+            phx-click="approve_transition"
+            phx-value-to_phase={pending_transition.to_phase}
+            class="btn btn-sm btn-warning"
+          >
+            Continue
+          </button>
+        </div>
+      <% end %>
+
       <!-- Spec Section -->
       <.card title="Specification">
         <%= if @editing_spec do %>
@@ -707,14 +734,6 @@ defmodule IpaWeb.Pod.TaskLive do
           <%= if @state.spec do %>
             <div class="prose prose-sm max-w-none">
               <p>{@state.spec[:description] || @state.spec["description"] || "No description"}</p>
-              <%= if requirements = @state.spec[:requirements] || @state.spec["requirements"] do %>
-                <h4>Requirements</h4>
-                <ul>
-                  <%= for req <- List.wrap(requirements) do %>
-                    <li>{req}</li>
-                  <% end %>
-                </ul>
-              <% end %>
             </div>
             <%= if !(@state.spec[:approved?] || @state.spec["approved?"]) do %>
               <div class="mt-4 flex gap-2">
@@ -740,7 +759,7 @@ defmodule IpaWeb.Pod.TaskLive do
           <% end %>
         <% end %>
       </.card>
-
+      
     <!-- Plan Section -->
       <.card title="Plan">
         <%= if @state.plan do %>
@@ -771,8 +790,7 @@ defmodule IpaWeb.Pod.TaskLive do
                               </span>
                             <% else %>
                               <span class="flex items-center gap-1 text-success">
-                                <.icon name="hero-check" class="w-3 h-3" />
-                                No dependencies
+                                <.icon name="hero-check" class="w-3 h-3" /> No dependencies
                               </span>
                             <% end %>
                           <% end %>
@@ -818,32 +836,6 @@ defmodule IpaWeb.Pod.TaskLive do
           <p class="text-base-content/60">No plan yet.</p>
         <% end %>
       </.card>
-
-    <!-- Phase Transitions -->
-      <%= if pending_transition = get_pending_transition(@state) do %>
-        <.card title="Pending Transition">
-          <div class="alert alert-warning">
-            <.icon name="hero-exclamation-triangle" class="w-5 h-5" />
-            <span>
-              Transition to <strong>{pending_transition.to_phase}</strong> requires approval
-            </span>
-            <button
-              phx-click="approve_transition"
-              phx-value-to_phase={pending_transition.to_phase}
-              class="btn btn-sm btn-warning"
-            >
-              Approve
-            </button>
-          </div>
-        </.card>
-      <% end %>
-
-    <!-- Quick Stats -->
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <.stat_card label="Workstreams" value={workstream_count(@state)} icon="hero-queue-list" />
-        <.stat_card label="Active Agents" value={active_agent_count(@state)} icon="hero-cpu-chip" />
-        <.stat_card label="Messages" value={message_count(@state)} icon="hero-chat-bubble-left-right" />
-      </div>
     </div>
     """
   end
@@ -889,7 +881,7 @@ defmodule IpaWeb.Pod.TaskLive do
           </div>
         <% end %>
       </div>
-
+      
     <!-- Workstream Details Panel -->
       <%= if @selected_ws do %>
         <div class="lg:col-span-2">
@@ -971,7 +963,7 @@ defmodule IpaWeb.Pod.TaskLive do
             <.icon name="hero-x-mark" class="w-5 h-5" />
           </button>
         </div>
-
+        
     <!-- Status Badge -->
         <div class="flex items-center gap-2 mb-4">
           <span class="text-sm font-medium">Status:</span>
@@ -979,7 +971,7 @@ defmodule IpaWeb.Pod.TaskLive do
             {format_status(@workstream.status)}
           </span>
         </div>
-
+        
     <!-- Specification -->
         <%= if @workstream.spec do %>
           <div class="mb-4">
@@ -991,7 +983,7 @@ defmodule IpaWeb.Pod.TaskLive do
             </div>
           </div>
         <% end %>
-
+        
     <!-- Workspace Information -->
         <%= if @workstream.workspace_path do %>
           <div class="mb-4">
@@ -1018,7 +1010,7 @@ defmodule IpaWeb.Pod.TaskLive do
             </div>
           <% end %>
         <% end %>
-
+        
     <!-- Agent Information -->
         <%= if @agent do %>
           <div class="mb-4">
@@ -1067,7 +1059,7 @@ defmodule IpaWeb.Pod.TaskLive do
             <p class="text-sm text-base-content/60">No agent assigned yet</p>
           </div>
         <% end %>
-
+        
     <!-- Dependencies -->
         <div class="mb-4">
           <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
@@ -1087,7 +1079,7 @@ defmodule IpaWeb.Pod.TaskLive do
             <p class="text-sm text-success">No dependencies - can start immediately</p>
           <% end %>
         </div>
-
+        
     <!-- Blocking On -->
         <%= if blocking = @workstream.blocking_on do %>
           <%= if length(blocking) > 0 do %>
@@ -1103,7 +1095,7 @@ defmodule IpaWeb.Pod.TaskLive do
             </div>
           <% end %>
         <% end %>
-
+        
     <!-- Timestamps -->
         <div class="border-t border-base-300 pt-4 mt-4">
           <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
@@ -1202,7 +1194,7 @@ defmodule IpaWeb.Pod.TaskLive do
               Showing {length(@filtered_events)} of {length(@events)} events
             </span>
           </div>
-
+          
     <!-- Events Timeline -->
           <div class="space-y-2 max-h-[600px] overflow-y-auto">
             <%= if Enum.empty?(@filtered_events) do %>
@@ -1221,7 +1213,7 @@ defmodule IpaWeb.Pod.TaskLive do
           </div>
         </.card>
       </div>
-
+      
     <!-- Event Details Panel -->
       <%= if @selected_event do %>
         <div class="lg:col-span-1">
@@ -1247,7 +1239,7 @@ defmodule IpaWeb.Pod.TaskLive do
       <div class={"w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 #{@event_color}"}>
         <.icon name={@event_icon} class="w-5 h-5" />
       </div>
-
+      
     <!-- Event Info -->
       <div class="flex-1 min-w-0">
         <div class="flex items-center justify-between gap-2">
@@ -1258,12 +1250,12 @@ defmodule IpaWeb.Pod.TaskLive do
             v{@event.version}
           </span>
         </div>
-
+        
     <!-- Event Summary -->
         <p class="text-xs text-base-content/60 mt-1 line-clamp-1">
           {event_summary(@event)}
         </p>
-
+        
     <!-- Metadata -->
         <div class="flex items-center gap-3 mt-2 text-xs text-base-content/50">
           <%= if @event.actor_id do %>
@@ -1301,7 +1293,7 @@ defmodule IpaWeb.Pod.TaskLive do
             <.icon name="hero-x-mark" class="w-5 h-5" />
           </button>
         </div>
-
+        
     <!-- Event Type -->
         <div class="mb-4">
           <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
@@ -1311,7 +1303,7 @@ defmodule IpaWeb.Pod.TaskLive do
             {@event.event_type}
           </span>
         </div>
-
+        
     <!-- Timestamp -->
         <div class="mb-4">
           <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
@@ -1319,7 +1311,7 @@ defmodule IpaWeb.Pod.TaskLive do
           </h3>
           <p class="text-sm">{format_timestamp_full(@event.inserted_at)}</p>
         </div>
-
+        
     <!-- Actor -->
         <%= if @event.actor_id do %>
           <div class="mb-4">
@@ -1329,7 +1321,7 @@ defmodule IpaWeb.Pod.TaskLive do
             <code class="text-xs bg-base-200 px-2 py-1 rounded">{@event.actor_id}</code>
           </div>
         <% end %>
-
+        
     <!-- Correlation ID -->
         <%= if @event.correlation_id do %>
           <div class="mb-4">
@@ -1341,7 +1333,7 @@ defmodule IpaWeb.Pod.TaskLive do
             </code>
           </div>
         <% end %>
-
+        
     <!-- Event Data -->
         <div class="mb-4">
           <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
@@ -1351,7 +1343,7 @@ defmodule IpaWeb.Pod.TaskLive do
             <pre class="text-xs whitespace-pre-wrap break-all"><%= format_event_data(@event.data) %></pre>
           </div>
         </div>
-
+        
     <!-- Metadata -->
         <%= if @event.metadata do %>
           <div class="mb-4">
@@ -1409,7 +1401,7 @@ defmodule IpaWeb.Pod.TaskLive do
               </button>
             </div>
           </div>
-
+          
     <!-- Messages -->
           <div class="space-y-3 max-h-96 overflow-y-auto">
             <%= if Enum.empty?(@messages) do %>
@@ -1422,7 +1414,7 @@ defmodule IpaWeb.Pod.TaskLive do
           </div>
         </.card>
       </div>
-
+      
     <!-- Inbox / Pending Approvals -->
       <div class="space-y-4">
         <.card title="Inbox">
@@ -1436,10 +1428,13 @@ defmodule IpaWeb.Pod.TaskLive do
             </div>
           <% end %>
         </.card>
-
+        
     <!-- Pending Approvals -->
         <.card title="Pending Approvals">
-          <% pending = Enum.filter(@messages, fn m -> (Map.get(m, :message_type) || Map.get(m, :type)) == :approval && !m.approved? end) %>
+          <% pending =
+            Enum.filter(@messages, fn m ->
+              (Map.get(m, :message_type) || Map.get(m, :type)) == :approval && !m.approved?
+            end) %>
           <%= if Enum.empty?(pending) do %>
             <p class="text-center text-base-content/60 py-4">No pending approvals.</p>
           <% else %>
@@ -1457,7 +1452,9 @@ defmodule IpaWeb.Pod.TaskLive do
 
   defp message_item(assigns) do
     # Handle both old :type and new :message_type field names
-    msg_type = Map.get(assigns.message, :message_type) || Map.get(assigns.message, :type) || :update
+    msg_type =
+      Map.get(assigns.message, :message_type) || Map.get(assigns.message, :type) || :update
+
     assigns = assign(assigns, :type_badge, message_type_badge(msg_type))
     assigns = assign(assigns, :msg_type, msg_type)
 
@@ -1481,7 +1478,10 @@ defmodule IpaWeb.Pod.TaskLive do
     msg = Enum.find(assigns.messages, fn m -> m.message_id == assigns.notification.message_id end)
     assigns = assign(assigns, :message, msg)
     # Handle both old :type and new :notification_type field names
-    notif_type = Map.get(assigns.notification, :notification_type) || Map.get(assigns.notification, :type) || :update
+    notif_type =
+      Map.get(assigns.notification, :notification_type) || Map.get(assigns.notification, :type) ||
+        :update
+
     assigns = assign(assigns, :notif_type, notif_type)
 
     ~H"""
@@ -1529,24 +1529,6 @@ defmodule IpaWeb.Pod.TaskLive do
           <h2 class="card-title text-lg">{@title}</h2>
         <% end %>
         {render_slot(@inner_block)}
-      </div>
-    </div>
-    """
-  end
-
-  defp stat_card(assigns) do
-    ~H"""
-    <div class="card bg-base-100 shadow-sm border border-base-300">
-      <div class="card-body p-4">
-        <div class="flex items-center gap-3">
-          <div class="bg-primary/10 p-2 rounded-lg">
-            <.icon name={@icon} class="w-6 h-6 text-primary" />
-          </div>
-          <div>
-            <p class="text-2xl font-bold">{@value}</p>
-            <p class="text-sm text-base-content/60">{@label}</p>
-          </div>
-        </div>
       </div>
     </div>
     """
@@ -1648,18 +1630,8 @@ defmodule IpaWeb.Pod.TaskLive do
 
   defp workstream_count(_state), do: 0
 
-  defp active_agent_count(%{agents: agents}) when is_list(agents) do
-    Enum.count(agents, fn a -> a.status == :running end)
-  end
-
-  defp active_agent_count(_state), do: 0
-
   defp agent_count(%{agents: agents}) when is_list(agents), do: length(agents)
   defp agent_count(_state), do: 0
-
-  defp message_count(%{messages: messages}) when is_map(messages), do: map_size(messages)
-  defp message_count(%{messages: messages}) when is_list(messages), do: length(messages)
-  defp message_count(_state), do: 0
 
   defp unread_count(%{notifications: notifications}) when is_list(notifications) do
     Enum.count(notifications, fn n -> !n.read? end)

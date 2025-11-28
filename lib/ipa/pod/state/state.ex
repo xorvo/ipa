@@ -42,7 +42,8 @@ defmodule Ipa.Pod.State do
     pending_transitions: [],
     config: %{
       max_concurrent_agents: 3,
-      evaluation_interval: 5_000
+      evaluation_interval: 5_000,
+      auto_start_agents: true
     }
   ]
 
@@ -257,7 +258,8 @@ defmodule Ipa.Pod.State.Agent do
   @moduledoc "Represents an agent instance."
 
   @type agent_type :: :planning | :workstream | :review
-  @type status :: :running | :completed | :failed
+  @type status ::
+          :pending_start | :running | :awaiting_input | :completed | :failed | :interrupted
 
   defstruct [
     :agent_id,
@@ -268,7 +270,9 @@ defmodule Ipa.Pod.State.Agent do
     :completed_at,
     :error,
     :output,
-    status: :running
+    status: :running,
+    interactive: true,
+    conversation_history: []
   ]
 
   @type t :: %__MODULE__{
@@ -280,11 +284,23 @@ defmodule Ipa.Pod.State.Agent do
           started_at: integer() | nil,
           completed_at: integer() | nil,
           error: String.t() | nil,
-          output: String.t() | nil
+          output: String.t() | nil,
+          interactive: boolean(),
+          conversation_history: [map()]
         }
 
   @doc "Returns true if agent is running."
   @spec running?(t()) :: boolean()
   def running?(%__MODULE__{status: :running}), do: true
   def running?(_), do: false
+
+  @doc "Returns true if agent is pending start (waiting for manual start)."
+  @spec pending_start?(t()) :: boolean()
+  def pending_start?(%__MODULE__{status: :pending_start}), do: true
+  def pending_start?(_), do: false
+
+  @doc "Returns true if agent is awaiting user input."
+  @spec awaiting_input?(t()) :: boolean()
+  def awaiting_input?(%__MODULE__{status: :awaiting_input}), do: true
+  def awaiting_input?(_), do: false
 end

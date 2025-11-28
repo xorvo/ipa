@@ -57,11 +57,13 @@ defmodule IpaWeb.Pod.AgentPanelLive do
             Phoenix.PubSub.subscribe(Ipa.PubSub, "agent:#{agent.agent_id}:stream")
           end
 
-          # Initialize streaming_outputs with persisted output for completed agents
+          # Initialize streaming_outputs with persisted output for non-running agents
           # This ensures output is visible when the panel loads
           streaming_outputs =
             agents
-            |> Enum.filter(fn a -> a.status in [:completed, :failed] && a.output end)
+            |> Enum.filter(fn a ->
+              a.status in [:completed, :failed, :awaiting_input, :interrupted] && a.output
+            end)
             |> Enum.map(fn a -> {a.agent_id, a.output} end)
             |> Map.new()
 
@@ -77,12 +79,21 @@ defmodule IpaWeb.Pod.AgentPanelLive do
 
   @impl true
   def render(assigns) do
+    # Pending agents waiting for manual start
+    pending_agents = Enum.filter(assigns.agents || [], &(&1.status == :pending_start))
+    # Running agents (including those running after being started)
     running_agents = Enum.filter(assigns.agents || [], &(&1.status == :running))
-    completed_agents = Enum.filter(assigns.agents || [], &(&1.status in [:completed, :failed, :interrupted]))
+    # Agents waiting for user input (interactive mode)
+    awaiting_agents = Enum.filter(assigns.agents || [], &(&1.status == :awaiting_input))
+    # Completed/failed/interrupted agents
+    completed_agents =
+      Enum.filter(assigns.agents || [], &(&1.status in [:completed, :failed, :interrupted]))
 
     assigns =
       assigns
+      |> assign(:pending_agents, pending_agents)
       |> assign(:running_agents, running_agents)
+      |> assign(:awaiting_agents, awaiting_agents)
       |> assign(:completed_agents, completed_agents)
 
     ~H"""
@@ -98,14 +109,24 @@ defmodule IpaWeb.Pod.AgentPanelLive do
           </h3>
         </div>
         <div class="flex items-center gap-2">
+          <%= if length(@pending_agents) > 0 do %>
+            <span class="badge badge-warning gap-1">
+              {length(@pending_agents)} pending
+            </span>
+          <% end %>
           <%= if length(@running_agents) > 0 do %>
             <span class="badge badge-info gap-1">
               <span class="w-2 h-2 bg-info-content rounded-full animate-pulse"></span>
-              <%= length(@running_agents) %> running
+              {length(@running_agents)} running
+            </span>
+          <% end %>
+          <%= if length(@awaiting_agents) > 0 do %>
+            <span class="badge badge-accent gap-1">
+              {length(@awaiting_agents)} awaiting
             </span>
           <% end %>
           <%= if length(@completed_agents) > 0 do %>
-            <span class="badge badge-ghost"><%= length(@completed_agents) %> completed</span>
+            <span class="badge badge-ghost">{length(@completed_agents)} completed</span>
           <% end %>
         </div>
       </div>
@@ -124,12 +145,27 @@ defmodule IpaWeb.Pod.AgentPanelLive do
           </div>
         </div>
       <% else %>
-        <!-- Running agents (expanded by default) -->
+        <!-- Pending agents (waiting for manual start) -->
+        <%= if length(@pending_agents) > 0 do %>
+          <div class="space-y-4">
+            <h4 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider flex items-center gap-2">
+              <span class="w-2 h-2 bg-warning rounded-full"></span> Pending Start
+            </h4>
+            <%= for agent <- @pending_agents do %>
+              <.agent_card
+                agent={agent}
+                expanded={true}
+                streaming_output={Map.get(@streaming_outputs, agent.agent_id, "")}
+              />
+            <% end %>
+          </div>
+        <% end %>
+        
+    <!-- Running agents (expanded by default) -->
         <%= if length(@running_agents) > 0 do %>
           <div class="space-y-4">
             <h4 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider flex items-center gap-2">
-              <span class="w-2 h-2 bg-info rounded-full animate-pulse"></span>
-              Running
+              <span class="w-2 h-2 bg-info rounded-full animate-pulse"></span> Running
             </h4>
             <%= for agent <- @running_agents do %>
               <.agent_card
@@ -140,8 +176,24 @@ defmodule IpaWeb.Pod.AgentPanelLive do
             <% end %>
           </div>
         <% end %>
-
-        <!-- Completed agents (collapsed by default) -->
+        
+    <!-- Awaiting input agents (interactive mode) -->
+        <%= if length(@awaiting_agents) > 0 do %>
+          <div class="space-y-4">
+            <h4 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider flex items-center gap-2">
+              <span class="w-2 h-2 bg-accent rounded-full"></span> Awaiting Input
+            </h4>
+            <%= for agent <- @awaiting_agents do %>
+              <.agent_card
+                agent={agent}
+                expanded={true}
+                streaming_output={Map.get(@streaming_outputs, agent.agent_id, "")}
+              />
+            <% end %>
+          </div>
+        <% end %>
+        
+    <!-- Completed agents (collapsed by default) -->
         <%= if length(@completed_agents) > 0 do %>
           <div class="space-y-3">
             <h4 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider">
@@ -157,8 +209,8 @@ defmodule IpaWeb.Pod.AgentPanelLive do
           </div>
         <% end %>
       <% end %>
-
-      <!-- Agent Detail Modal -->
+      
+    <!-- Agent Detail Modal -->
       <%= if @selected_agent_id do %>
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
           <!-- Backdrop click handler -->
@@ -173,10 +225,10 @@ defmodule IpaWeb.Pod.AgentPanelLive do
               <.icon name="hero-x-mark" class="w-5 h-5" />
             </button>
             <!-- Agent Detail LiveView -->
-            <%= live_render(@socket, IpaWeb.Pod.AgentDetailLive,
+            {live_render(@socket, IpaWeb.Pod.AgentDetailLive,
               id: "agent-detail-#{@selected_agent_id}",
               session: %{"task_id" => @task_id, "agent_id" => @selected_agent_id}
-            ) %>
+            )}
           </div>
         </div>
       <% end %>
@@ -216,6 +268,25 @@ defmodule IpaWeb.Pod.AgentPanelLive do
     {:noreply, socket}
   end
 
+  def handle_event("start_agent", %{"agent_id" => agent_id}, socket) do
+    Logger.info("Manually starting agent from UI", agent_id: agent_id)
+    task_id = socket.assigns.task_id
+
+    case Ipa.Pod.Manager.manually_start_agent(task_id, agent_id, "user") do
+      {:ok, _version} ->
+        {:noreply, put_flash(socket, :info, "Agent started")}
+
+      {:error, :agent_not_pending} ->
+        {:noreply, put_flash(socket, :warning, "Agent is not in pending state")}
+
+      {:error, :agent_not_found} ->
+        {:noreply, put_flash(socket, :error, "Agent not found")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to start agent: #{inspect(reason)}")}
+    end
+  end
+
   def handle_event("interrupt_agent", %{"agent_id" => agent_id}, socket) do
     Logger.info("Interrupting agent from UI", agent_id: agent_id)
 
@@ -227,10 +298,35 @@ defmodule IpaWeb.Pod.AgentPanelLive do
         # Agent process is gone - reload agents to get fresh state
         Logger.warning("Agent #{agent_id} not found - process may have crashed")
         socket = reload_agents(socket)
-        {:noreply, put_flash(socket, :warning, "Agent process not found - it may have already stopped")}
+
+        {:noreply,
+         put_flash(socket, :warning, "Agent process not found - it may have already stopped")}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to interrupt: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("restart_agent", %{"agent_id" => agent_id}, socket) do
+    Logger.info("Restarting agent from UI", agent_id: agent_id)
+    task_id = socket.assigns.task_id
+
+    case Ipa.Pod.Manager.restart_agent(task_id, agent_id, "user") do
+      {:ok, new_agent_id, _version} ->
+        Logger.info("Agent restarted", old_agent_id: agent_id, new_agent_id: new_agent_id)
+
+        {:noreply,
+         put_flash(socket, :info, "Agent restarted - new agent created and ready to start")}
+
+      {:error, :agent_not_found} ->
+        {:noreply, put_flash(socket, :error, "Agent not found")}
+
+      {:error, :agent_not_restartable} ->
+        {:noreply,
+         put_flash(socket, :warning, "Only failed or interrupted agents can be restarted")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to restart agent: #{inspect(reason)}")}
     end
   end
 
@@ -315,7 +411,19 @@ defmodule IpaWeb.Pod.AgentPanelLive do
   def handle_info({:event_appended, task_id, event}, socket)
       when task_id == socket.assigns.task_id do
     case event.event_type do
-      type when type in ["agent_started", "agent_completed", "agent_failed", "agent_status_changed"] ->
+      type
+      when type in [
+             "agent_started",
+             "agent_completed",
+             "agent_failed",
+             "agent_status_changed",
+             "agent_pending_start",
+             "agent_manually_started",
+             "agent_awaiting_input",
+             "agent_marked_done",
+             "agent_response_received",
+             "agent_message_sent"
+           ] ->
         # Reload agents from state
         case Ipa.Pod.Manager.get_state_from_events(task_id) do
           {:ok, state} ->
@@ -348,8 +456,10 @@ defmodule IpaWeb.Pod.AgentPanelLive do
   # ============================================================================
 
   defp agent_card(assigns) do
-    # Determine if running for special styling
+    # Determine status states for styling
     is_running = assigns.agent.status == :running
+    is_pending = assigns.agent.status == :pending_start
+    is_awaiting_input = assigns.agent.status == :awaiting_input
     # Check if the agent process is actually alive (not just state saying "running")
     process_alive = is_running && Ipa.Agent.Instance.alive?(assigns.agent.agent_id)
     # Use streaming output for running agents, otherwise use persisted output from state
@@ -360,11 +470,13 @@ defmodule IpaWeb.Pod.AgentPanelLive do
     assigns =
       assigns
       |> assign(:is_running, is_running)
+      |> assign(:is_pending, is_pending)
+      |> assign(:is_awaiting_input, is_awaiting_input)
       |> assign(:output, output)
 
     ~H"""
     <div
-      class={"card shadow-lg border transition-all duration-300 cursor-pointer hover:shadow-xl #{if @is_running, do: "bg-base-100 border-info/50 ring-2 ring-info/20", else: "bg-base-100 border-base-300 hover:border-primary/30"}"}
+      class={"card shadow-lg border transition-all duration-300 cursor-pointer hover:shadow-xl #{cond do @is_pending -> "bg-base-100 border-warning/50 ring-2 ring-warning/20"; @is_running -> "bg-base-100 border-info/50 ring-2 ring-info/20"; @is_awaiting_input -> "bg-base-100 border-accent/50 ring-2 ring-accent/20"; true -> "bg-base-100 border-base-300 hover:border-primary/30" end}"}
       phx-click="view_agent_detail"
       phx-value-agent_id={@agent.agent_id}
     >
@@ -375,34 +487,57 @@ defmodule IpaWeb.Pod.AgentPanelLive do
             <.agent_status_indicator status={@agent.status} />
             <div>
               <div class="flex items-center gap-2">
-                <span class="font-semibold text-base"><%= format_agent_type(@agent.agent_type) %></span>
+                <span class="font-semibold text-base">{format_agent_type(@agent.agent_type)}</span>
+                <%= if @is_pending do %>
+                  <span class="badge badge-xs badge-warning">Awaiting Start</span>
+                <% end %>
                 <%= if @is_running do %>
                   <span class="loading loading-spinner loading-xs text-info"></span>
+                <% end %>
+                <%= if @is_awaiting_input do %>
+                  <span class="badge badge-xs badge-accent">Awaiting Input</span>
                 <% end %>
               </div>
               <%= if @agent.workstream_id do %>
                 <span class="text-xs text-base-content/50 font-mono">
-                  ws: <%= String.slice(@agent.workstream_id, 0, 12) %>...
+                  ws: {String.slice(@agent.workstream_id, 0, 12)}...
                 </span>
               <% end %>
             </div>
           </div>
-
-          <!-- Control buttons - click events stop propagation to parent -->
+          
+    <!-- Control buttons - click events stop propagation to parent -->
           <div class="flex items-center gap-2" phx-click="noop" phx-value-stop="true">
+            <%= if @is_pending do %>
+              <button
+                phx-click="start_agent"
+                phx-value-agent_id={@agent.agent_id}
+                class="btn btn-xs btn-success gap-1"
+              >
+                <.icon name="hero-play" class="w-3 h-3" /> Start
+              </button>
+            <% end %>
             <%= if @process_alive do %>
               <button
                 phx-click="interrupt_agent"
                 phx-value-agent_id={@agent.agent_id}
                 class="btn btn-xs btn-error gap-1"
               >
-                <.icon name="hero-stop" class="w-3 h-3" />
-                Stop
+                <.icon name="hero-stop" class="w-3 h-3" /> Stop
               </button>
             <% else %>
               <%= if @is_running do %>
                 <span class="badge badge-xs badge-warning">Process Dead</span>
               <% end %>
+            <% end %>
+            <%= if @agent.status in [:failed, :interrupted] do %>
+              <button
+                phx-click="restart_agent"
+                phx-value-agent_id={@agent.agent_id}
+                class="btn btn-xs btn-warning gap-1"
+              >
+                <.icon name="hero-arrow-path" class="w-3 h-3" /> Restart
+              </button>
             <% end %>
 
             <button
@@ -418,28 +553,28 @@ defmodule IpaWeb.Pod.AgentPanelLive do
             </button>
           </div>
         </div>
-
-        <!-- Status bar -->
+        
+    <!-- Status bar -->
         <div class="flex items-center gap-4 text-xs text-base-content/50 mt-2 font-mono">
           <span class="flex items-center gap-1">
             <.icon name="hero-finger-print" class="w-3 h-3" />
-            <%= String.slice(@agent.agent_id, 0, 8) %>
+            {String.slice(@agent.agent_id, 0, 8)}
           </span>
           <%= if @agent.started_at do %>
             <span class="flex items-center gap-1">
               <.icon name="hero-clock" class="w-3 h-3" />
-              <%= format_time(@agent.started_at) %>
+              {format_time(@agent.started_at)}
             </span>
           <% end %>
           <%= if @agent.completed_at do %>
             <span class="flex items-center gap-1">
               <.icon name="hero-check-circle" class="w-3 h-3" />
-              <%= format_time(@agent.completed_at) %>
+              {format_time(@agent.completed_at)}
             </span>
           <% end %>
         </div>
-
-        <!-- Expanded content -->
+        
+    <!-- Expanded content -->
         <%= if @expanded do %>
           <div class="mt-4 space-y-4">
             <!-- Output panel -->
@@ -453,18 +588,18 @@ defmodule IpaWeb.Pod.AgentPanelLive do
                 </h4>
                 <% char_count = String.length(@output) %>
                 <%= if char_count > 0 do %>
-                  <span class="text-xs text-base-content/40"><%= char_count %> chars</span>
+                  <span class="text-xs text-base-content/40">{char_count} chars</span>
                 <% end %>
               </div>
-
-              <!-- Output content -->
+              
+    <!-- Output content -->
               <div
                 class="rounded-lg p-3 min-h-[120px] max-h-[300px] overflow-y-auto bg-neutral text-neutral-content/90"
                 id={"output-#{@agent.agent_id}"}
                 phx-hook="AutoScroll"
               >
                 <%= if @output != "" do %>
-                  <div class="text-xs leading-relaxed whitespace-pre-wrap break-words"><%= @output %></div>
+                  <div class="text-xs leading-relaxed whitespace-pre-wrap break-words">{@output}</div>
                   <%= if @is_running do %>
                     <span class="inline-block w-1.5 h-3 bg-info animate-pulse ml-0.5"></span>
                   <% end %>
@@ -479,54 +614,39 @@ defmodule IpaWeb.Pod.AgentPanelLive do
                 <% end %>
               </div>
             </div>
-
-            <!-- Tool calls (compact view) -->
+            
+    <!-- Tool calls (compact view) -->
             <% tool_calls = Map.get(@agent, :tool_calls, []) %>
             <%= if length(tool_calls) > 0 do %>
               <div>
                 <h4 class="font-medium text-sm mb-2 flex items-center gap-2">
-                  <.icon name="hero-wrench-screwdriver" class="w-4 h-4" />
-                  Tool Calls
-                  <span class="badge badge-xs badge-ghost"><%= length(tool_calls) %></span>
+                  <.icon name="hero-wrench-screwdriver" class="w-4 h-4" /> Tool Calls
+                  <span class="badge badge-xs badge-ghost">{length(tool_calls)}</span>
                 </h4>
                 <div class="flex flex-wrap gap-2">
                   <%= for tool <- Enum.take(tool_calls, 10) do %>
                     <span class={"badge badge-sm gap-1 #{if tool.status == :completed, do: "badge-success", else: "badge-warning"}"}>
-                      <%= tool.name %>
+                      {tool.name}
                       <%= if tool.status == :running do %>
                         <span class="loading loading-spinner loading-xs"></span>
                       <% end %>
                     </span>
                   <% end %>
                   <%= if length(tool_calls) > 10 do %>
-                    <span class="badge badge-sm badge-ghost">+<%= length(tool_calls) - 10 %> more</span>
+                    <span class="badge badge-sm badge-ghost">+{length(tool_calls) - 10} more</span>
                   <% end %>
                 </div>
               </div>
             <% end %>
-
-            <!-- Collapsible prompt -->
-            <details class="collapse collapse-arrow bg-base-200 rounded-lg">
-              <summary class="collapse-title text-sm font-medium py-2 min-h-0">
-                <span class="flex items-center gap-2">
-                  <.icon name="hero-document-text" class="w-4 h-4" />
-                  Prompt
-                </span>
-              </summary>
-              <div class="collapse-content">
-                <div class="text-sm text-base-content/70 whitespace-pre-wrap font-mono bg-base-300 rounded p-3 max-h-48 overflow-y-auto">
-                  <%= Map.get(@agent, :prompt) || "No prompt available" %>
-                </div>
-              </div>
-            </details>
-
-            <!-- Error -->
+            
+            
+    <!-- Error -->
             <%= if @agent.error do %>
               <div class="alert alert-error shadow-lg">
                 <.icon name="hero-exclamation-triangle" class="w-5 h-5" />
                 <div>
                   <h4 class="font-bold">Agent Error</h4>
-                  <p class="text-sm"><%= @agent.error %></p>
+                  <p class="text-sm">{@agent.error}</p>
                 </div>
               </div>
             <% end %>
@@ -562,8 +682,13 @@ defmodule IpaWeb.Pod.AgentPanelLive do
   defp format_agent_type(:workstream), do: "Workstream Agent"
   defp format_agent_type(:pr_consolidation), do: "PR Consolidation Agent"
   defp format_agent_type(:pr_comment_resolver), do: "PR Comment Resolver"
-  defp format_agent_type(type) when is_atom(type), do: type |> Atom.to_string() |> String.replace("_", " ") |> String.capitalize()
-  defp format_agent_type(type) when is_binary(type), do: String.replace(type, "_", " ") |> String.capitalize()
+
+  defp format_agent_type(type) when is_atom(type),
+    do: type |> Atom.to_string() |> String.replace("_", " ") |> String.capitalize()
+
+  defp format_agent_type(type) when is_binary(type),
+    do: String.replace(type, "_", " ") |> String.capitalize()
+
   defp format_agent_type(_), do: "Unknown Agent"
 
   defp format_time(nil), do: "-"
