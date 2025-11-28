@@ -22,6 +22,9 @@ defmodule IpaWeb.Router do
 
     # Pod detail view
     live "/pods/:task_id", Pod.TaskLive, :show
+
+    # Document review view (spec, plan, report)
+    live "/pods/:task_id/review/:doc_type", Pod.DocumentReviewLive, :review
   end
 
   # Other scopes may use custom stacks.

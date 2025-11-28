@@ -79,6 +79,8 @@ defmodule Ipa.Pod.Event do
   defp type_to_module("workspace_cleanup"), do: Ipa.Pod.Events.WorkspaceCleanup
   defp type_to_module("workstream_agent_started"), do: Ipa.Pod.Events.WorkstreamAgentStarted
   defp type_to_module("task_completed"), do: Ipa.Pod.Events.TaskCompleted
+  defp type_to_module("review_thread_resolved"), do: Ipa.Pod.Events.ReviewThreadResolved
+  defp type_to_module("review_thread_reopened"), do: Ipa.Pod.Events.ReviewThreadReopened
   # alias to PhaseChanged
   defp type_to_module("phase_transitioned"), do: Ipa.Pod.Events.PhaseChanged
   # Fallback for unknown events - just return the raw data wrapped

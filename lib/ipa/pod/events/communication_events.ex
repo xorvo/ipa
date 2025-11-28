@@ -1,5 +1,11 @@
 defmodule Ipa.Pod.Events.MessagePosted do
-  @moduledoc "Event emitted when a message is posted."
+  @moduledoc """
+  Event emitted when a message is posted.
+
+  For review comments (message_type: :review_comment), the metadata field contains:
+  - document_type: :spec | :plan | :report
+  - document_anchor: %{selected_text, surrounding_text, line_start, line_end}
+  """
   @behaviour Ipa.Pod.Event
 
   @enforce_keys [:task_id, :message_id, :author, :content, :message_type]
@@ -10,10 +16,12 @@ defmodule Ipa.Pod.Events.MessagePosted do
     :content,
     :message_type,
     :thread_id,
-    :workstream_id
+    :workstream_id,
+    # Generic metadata for feature-specific data (nil for regular messages)
+    :metadata
   ]
 
-  @type message_type :: :question | :update | :blocker
+  @type message_type :: :question | :update | :blocker | :review_comment
 
   @type t :: %__MODULE__{
           task_id: String.t(),
@@ -22,7 +30,8 @@ defmodule Ipa.Pod.Events.MessagePosted do
           content: String.t(),
           message_type: message_type(),
           thread_id: String.t() | nil,
-          workstream_id: String.t() | nil
+          workstream_id: String.t() | nil,
+          metadata: map() | nil
         }
 
   @impl true
@@ -30,7 +39,7 @@ defmodule Ipa.Pod.Events.MessagePosted do
 
   @impl true
   def to_map(%__MODULE__{} = event) do
-    %{
+    base = %{
       task_id: event.task_id,
       message_id: event.message_id,
       author: event.author,
@@ -39,6 +48,12 @@ defmodule Ipa.Pod.Events.MessagePosted do
       thread_id: event.thread_id,
       workstream_id: event.workstream_id
     }
+
+    if event.metadata do
+      Map.put(base, :metadata, event.metadata)
+    else
+      base
+    end
   end
 
   @impl true
@@ -51,7 +66,8 @@ defmodule Ipa.Pod.Events.MessagePosted do
       message_type:
         normalize_message_type(get_field(data, :message_type) || get_field(data, :type)),
       thread_id: get_field(data, :thread_id),
-      workstream_id: get_field(data, :workstream_id)
+      workstream_id: get_field(data, :workstream_id),
+      metadata: normalize_metadata(get_field(data, :metadata))
     }
   end
 
@@ -60,10 +76,36 @@ defmodule Ipa.Pod.Events.MessagePosted do
   defp normalize_message_type(:question), do: :question
   defp normalize_message_type(:update), do: :update
   defp normalize_message_type(:blocker), do: :blocker
+  defp normalize_message_type(:review_comment), do: :review_comment
   defp normalize_message_type("question"), do: :question
   defp normalize_message_type("update"), do: :update
   defp normalize_message_type("blocker"), do: :blocker
+  defp normalize_message_type("review_comment"), do: :review_comment
   defp normalize_message_type(_), do: :update
+
+  defp normalize_metadata(nil), do: nil
+
+  defp normalize_metadata(metadata) when is_map(metadata) do
+    # Normalize document_type if present
+    case metadata do
+      %{document_type: doc_type} = m ->
+        Map.put(m, :document_type, normalize_document_type(doc_type))
+
+      m ->
+        case m["document_type"] do
+          nil -> m
+          doc_type -> Map.put(m, :document_type, normalize_document_type(doc_type))
+        end
+    end
+  end
+
+  defp normalize_document_type(:spec), do: :spec
+  defp normalize_document_type(:plan), do: :plan
+  defp normalize_document_type(:report), do: :report
+  defp normalize_document_type("spec"), do: :spec
+  defp normalize_document_type("plan"), do: :plan
+  defp normalize_document_type("report"), do: :report
+  defp normalize_document_type(_), do: nil
 end
 
 defmodule Ipa.Pod.Events.ApprovalRequested do

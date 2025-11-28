@@ -14,7 +14,8 @@ defmodule Ipa.Pod.State.Projector do
     PhaseProjection,
     WorkstreamProjection,
     CommunicationProjection,
-    AgentProjection
+    AgentProjection,
+    ReviewProjection
   }
 
   @doc """
@@ -56,6 +57,7 @@ defmodule Ipa.Pod.State.Projector do
       workstream_event?(event) -> WorkstreamProjection.apply(state, event)
       communication_event?(event) -> CommunicationProjection.apply(state, event)
       agent_event?(event) -> AgentProjection.apply(state, event)
+      review_event?(event) -> ReviewProjection.apply(state, event)
       true -> state
     end
   end
@@ -108,4 +110,8 @@ defmodule Ipa.Pod.State.Projector do
   defp agent_event?(%Ipa.Pod.Events.AgentMarkedDone{}), do: true
   defp agent_event?(%Ipa.Pod.Events.AgentStateSnapshot{}), do: true
   defp agent_event?(_), do: false
+
+  defp review_event?(%Ipa.Pod.Events.ReviewThreadResolved{}), do: true
+  defp review_event?(%Ipa.Pod.Events.ReviewThreadReopened{}), do: true
+  defp review_event?(_), do: false
 end

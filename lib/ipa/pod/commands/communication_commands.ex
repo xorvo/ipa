@@ -134,6 +134,49 @@ defmodule Ipa.Pod.Commands.CommunicationCommands do
     end
   end
 
+  @doc """
+  Posts a review comment on a document.
+
+  ## Required params:
+  - author: who is posting the comment
+  - content: the comment text
+  - document_type: :spec | :plan | :report
+  - document_anchor: %{selected_text, surrounding_text, line_start, line_end}
+
+  ## Optional params:
+  - thread_id: if replying to an existing thread
+  - message_id: custom message ID
+  """
+  @spec post_review_comment(State.t(), map()) :: result()
+  def post_review_comment(state, params) do
+    with {:ok, content} <- validate_content(params[:content]),
+         {:ok, author} <- validate_author(params[:author]),
+         {:ok, document_type} <- validate_document_type(params[:document_type]),
+         {:ok, document_anchor} <- validate_document_anchor(params[:document_anchor]),
+         :ok <- validate_review_thread(params[:thread_id], state) do
+      metadata = %{
+        document_type: document_type,
+        document_anchor: document_anchor,
+        resolved?: false,
+        resolved_by: nil,
+        resolved_at: nil
+      }
+
+      event = %MessagePosted{
+        task_id: state.task_id,
+        message_id: params[:message_id] || Ecto.UUID.generate(),
+        author: author,
+        content: content,
+        message_type: :review_comment,
+        thread_id: params[:thread_id],
+        workstream_id: nil,
+        metadata: metadata
+      }
+
+      {:ok, [event]}
+    end
+  end
+
   # Validation helpers
 
   defp validate_message_type(type) when type in [:question, :update, :blocker], do: {:ok, type}
@@ -205,4 +248,75 @@ defmodule Ipa.Pod.Commands.CommunicationCommands do
   end
 
   defp validate_notification_type(_), do: {:error, :invalid_notification_type}
+
+  # Review comment validation helpers
+
+  defp validate_document_type(type) when type in [:spec, :plan, :report], do: {:ok, type}
+
+  defp validate_document_type(type) when is_binary(type) do
+    case type do
+      "spec" -> {:ok, :spec}
+      "plan" -> {:ok, :plan}
+      "report" -> {:ok, :report}
+      _ -> {:error, :invalid_document_type}
+    end
+  end
+
+  defp validate_document_type(_), do: {:error, :invalid_document_type}
+
+  defp validate_document_anchor(nil), do: {:error, :missing_document_anchor}
+
+  defp validate_document_anchor(anchor) when is_map(anchor) do
+    with {:ok, selected_text} <- get_required_string(anchor, :selected_text),
+         {:ok, surrounding_text} <- get_required_string(anchor, :surrounding_text),
+         {:ok, line_start} <- get_required_integer(anchor, :line_start),
+         {:ok, line_end} <- get_required_integer(anchor, :line_end) do
+      {:ok,
+       %{
+         selected_text: selected_text,
+         surrounding_text: surrounding_text,
+         line_start: line_start,
+         line_end: line_end
+       }}
+    end
+  end
+
+  defp validate_document_anchor(_), do: {:error, :invalid_document_anchor}
+
+  defp get_required_string(map, key) do
+    value = Map.get(map, key) || Map.get(map, to_string(key))
+
+    case value do
+      nil -> {:error, {:missing_field, key}}
+      "" -> {:error, {:empty_field, key}}
+      s when is_binary(s) -> {:ok, s}
+      _ -> {:error, {:invalid_field, key}}
+    end
+  end
+
+  defp get_required_integer(map, key) do
+    value = Map.get(map, key) || Map.get(map, to_string(key))
+
+    case value do
+      nil -> {:error, {:missing_field, key}}
+      i when is_integer(i) and i >= 0 -> {:ok, i}
+      _ -> {:error, {:invalid_field, key}}
+    end
+  end
+
+  defp validate_review_thread(nil, _state), do: :ok
+
+  defp validate_review_thread(thread_id, state) do
+    case Map.get(state.messages, thread_id) do
+      nil ->
+        {:error, :thread_not_found}
+
+      msg ->
+        if msg.message_type == :review_comment do
+          :ok
+        else
+          {:error, :not_review_thread}
+        end
+    end
+  end
 end

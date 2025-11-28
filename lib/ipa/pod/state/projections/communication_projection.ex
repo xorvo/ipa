@@ -22,11 +22,19 @@ defmodule Ipa.Pod.State.Projections.CommunicationProjection do
       message_type: event.message_type,
       thread_id: event.thread_id,
       workstream_id: event.workstream_id,
-      posted_at: System.system_time(:second)
+      posted_at: System.system_time(:second),
+      metadata: event.metadata
     }
 
     messages = Map.put(state.messages, event.message_id, message)
-    %{state | messages: messages}
+    state = %{state | messages: messages}
+
+    # If this is a review comment, update the review_threads index
+    if event.message_type == :review_comment and event.metadata do
+      update_review_threads(state, event)
+    else
+      state
+    end
   end
 
   def apply(state, %ApprovalRequested{} = event) do
@@ -108,5 +116,29 @@ defmodule Ipa.Pod.State.Projections.CommunicationProjection do
       end)
 
     %{state | notifications: notifications}
+  end
+
+  defp update_review_threads(state, event) do
+    document_type = get_in(event.metadata, [:document_type]) || event.metadata["document_type"]
+
+    if document_type do
+      # Determine the thread_id - either use existing thread_id (for replies) or message_id (for new threads)
+      thread_id = event.thread_id || event.message_id
+
+      # Get current threads for this document type
+      doc_threads = Map.get(state.review_threads, document_type, %{})
+
+      # Add this message to the thread
+      thread_messages = Map.get(doc_threads, thread_id, [])
+      updated_thread_messages = thread_messages ++ [event.message_id]
+
+      # Update the nested structure
+      updated_doc_threads = Map.put(doc_threads, thread_id, updated_thread_messages)
+      updated_review_threads = Map.put(state.review_threads, document_type, updated_doc_threads)
+
+      %{state | review_threads: updated_review_threads}
+    else
+      state
+    end
   end
 end

@@ -184,6 +184,81 @@ const Hooks = {
         this.pushEvent('open_in_editor', { path: path, line: line })
       })
     }
+  },
+
+  // Text selection hook for document review inline comments
+  TextSelection: {
+    mounted() {
+      this.handleMouseUp = this.handleMouseUp.bind(this)
+      this.el.addEventListener('mouseup', this.handleMouseUp)
+    },
+    destroyed() {
+      this.el.removeEventListener('mouseup', this.handleMouseUp)
+    },
+    handleMouseUp(e) {
+      const selection = window.getSelection()
+      const selectedText = selection.toString().trim()
+
+      if (selectedText.length > 0) {
+        // Get the line numbers from the selection range
+        const range = selection.getRangeAt(0)
+        const startContainer = range.startContainer
+        const endContainer = range.endContainer
+
+        // Find the line elements
+        const startLine = this.findLineElement(startContainer)
+        const endLine = this.findLineElement(endContainer)
+
+        const lineStart = startLine ? parseInt(startLine.dataset.line, 10) : 1
+        const lineEnd = endLine ? parseInt(endLine.dataset.line, 10) : lineStart
+
+        // Get surrounding context (more text around the selection for disambiguation)
+        const surroundingText = this.getSurroundingText(range, 100)
+
+        // Push event to LiveView
+        this.pushEvent('text_selected', {
+          text: selectedText,
+          surrounding: surroundingText,
+          lineStart: lineStart,
+          lineEnd: lineEnd
+        })
+      }
+    },
+    findLineElement(node) {
+      let current = node
+      while (current && current !== this.el) {
+        if (current.nodeType === Node.ELEMENT_NODE && current.dataset && current.dataset.line) {
+          return current
+        }
+        current = current.parentNode
+      }
+      return null
+    },
+    getSurroundingText(range, contextLength) {
+      // Get the text content around the selection
+      const container = range.commonAncestorContainer
+      let text = ''
+
+      if (container.nodeType === Node.TEXT_NODE) {
+        text = container.textContent
+      } else if (container.nodeType === Node.ELEMENT_NODE) {
+        text = container.textContent
+      }
+
+      // Get the selection's position within the text
+      const selectedText = range.toString()
+      const selectionStart = text.indexOf(selectedText)
+
+      if (selectionStart === -1) {
+        return selectedText
+      }
+
+      // Extract surrounding context
+      const contextStart = Math.max(0, selectionStart - contextLength)
+      const contextEnd = Math.min(text.length, selectionStart + selectedText.length + contextLength)
+
+      return text.substring(contextStart, contextEnd).trim()
+    }
   }
 }
 

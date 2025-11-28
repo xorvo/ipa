@@ -888,10 +888,24 @@ defmodule IpaWeb.Pod.TaskLive do
                 <button phx-click="approve_spec" class="btn btn-primary btn-sm">
                   Approve Spec
                 </button>
+                <a
+                  href={~p"/pods/#{@task_id}/review/spec"}
+                  class="btn btn-ghost btn-sm gap-1"
+                >
+                  <.icon name="hero-chat-bubble-left-right" class="w-4 h-4" /> Review
+                </a>
               </div>
             <% else %>
-              <div class="mt-4 text-success flex items-center gap-2">
-                <.icon name="hero-check-circle" class="w-5 h-5" /> Spec Approved
+              <div class="mt-4 flex items-center justify-between">
+                <div class="text-success flex items-center gap-2">
+                  <.icon name="hero-check-circle" class="w-5 h-5" /> Spec Approved
+                </div>
+                <a
+                  href={~p"/pods/#{@task_id}/review/spec"}
+                  class="btn btn-ghost btn-sm gap-1"
+                >
+                  <.icon name="hero-chat-bubble-left-right" class="w-4 h-4" /> Review
+                </a>
               </div>
             <% end %>
           <% else %>
@@ -967,14 +981,28 @@ defmodule IpaWeb.Pod.TaskLive do
             <% end %>
           <% end %>
           <%= if !(@state.plan[:approved?] || @state.plan["approved?"]) do %>
-            <div class="mt-4">
+            <div class="mt-4 flex gap-2">
               <button phx-click="approve_plan" class="btn btn-primary btn-sm">
                 Approve Plan
               </button>
+              <a
+                href={~p"/pods/#{@task_id}/review/plan"}
+                class="btn btn-ghost btn-sm gap-1"
+              >
+                <.icon name="hero-chat-bubble-left-right" class="w-4 h-4" /> Review
+              </a>
             </div>
           <% else %>
-            <div class="mt-4 text-success flex items-center gap-2">
-              <.icon name="hero-check-circle" class="w-5 h-5" /> Plan Approved
+            <div class="mt-4 flex items-center justify-between">
+              <div class="text-success flex items-center gap-2">
+                <.icon name="hero-check-circle" class="w-5 h-5" /> Plan Approved
+              </div>
+              <a
+                href={~p"/pods/#{@task_id}/review/plan"}
+                class="btn btn-ghost btn-sm gap-1"
+              >
+                <.icon name="hero-chat-bubble-left-right" class="w-4 h-4" /> Review
+              </a>
             </div>
           <% end %>
         <% else %>

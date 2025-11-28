@@ -44,6 +44,13 @@ defmodule Ipa.Pod.State do
       max_concurrent_agents: 3,
       evaluation_interval: 5_000,
       auto_start_agents: true
+    },
+    # Review threads organized by document type
+    # Each document type maps thread_id => list of message_ids in that thread
+    review_threads: %{
+      spec: %{},
+      plan: %{},
+      report: %{}
     }
   ]
 
@@ -61,7 +68,8 @@ defmodule Ipa.Pod.State do
           messages: %{String.t() => Message.t()},
           notifications: [Notification.t()],
           pending_transitions: [map()],
-          config: map()
+          config: map(),
+          review_threads: %{atom() => %{String.t() => [String.t()]}}
         }
 
   @doc "Creates a new empty state for a task."
@@ -130,6 +138,34 @@ defmodule Ipa.Pod.State do
   defp maybe_filter_recipient(notifications, recipient) do
     Enum.filter(notifications, fn n -> n.recipient == recipient end)
   end
+
+  @doc "Gets review threads for a specific document type."
+  @spec get_review_threads(t(), atom()) :: %{String.t() => [Message.t()]}
+  def get_review_threads(%__MODULE__{review_threads: threads, messages: messages}, document_type) do
+    thread_map = Map.get(threads, document_type, %{})
+
+    Map.new(thread_map, fn {thread_id, message_ids} ->
+      thread_messages =
+        message_ids
+        |> Enum.map(fn id -> Map.get(messages, id) end)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.sort_by(& &1.posted_at)
+
+      {thread_id, thread_messages}
+    end)
+  end
+
+  @doc "Gets all review comments for a document type (flat list)."
+  @spec get_review_comments(t(), atom()) :: [Message.t()]
+  def get_review_comments(%__MODULE__{messages: messages}, document_type) do
+    messages
+    |> Map.values()
+    |> Enum.filter(fn msg ->
+      msg.message_type == :review_comment and
+        get_in(msg.metadata, [:document_type]) == document_type
+    end)
+    |> Enum.sort_by(& &1.posted_at)
+  end
 end
 
 defmodule Ipa.Pod.State.Workstream do
@@ -178,9 +214,18 @@ defmodule Ipa.Pod.State.Workstream do
 end
 
 defmodule Ipa.Pod.State.Message do
-  @moduledoc "Represents a message or approval request."
+  @moduledoc """
+  Represents a message or approval request.
 
-  @type message_type :: :question | :update | :blocker | :approval
+  For review comments (message_type: :review_comment), the metadata field contains:
+  - document_type: :spec | :plan | :report
+  - document_anchor: %{selected_text, surrounding_text, line_start, line_end}
+  - resolved?: boolean
+  - resolved_by: String.t | nil
+  - resolved_at: integer | nil
+  """
+
+  @type message_type :: :question | :update | :blocker | :approval | :review_comment
 
   defstruct [
     :message_id,
@@ -195,7 +240,9 @@ defmodule Ipa.Pod.State.Message do
     approved?: false,
     approved_by: nil,
     approval_choice: nil,
-    blocking?: false
+    blocking?: false,
+    # Generic metadata for feature-specific data
+    metadata: nil
   ]
 
   @type t :: %__MODULE__{
@@ -210,7 +257,8 @@ defmodule Ipa.Pod.State.Message do
           approved?: boolean(),
           approved_by: String.t() | nil,
           approval_choice: String.t() | nil,
-          blocking?: boolean()
+          blocking?: boolean(),
+          metadata: map() | nil
         }
 
   @doc "Returns true if this is an approval request."
@@ -222,6 +270,16 @@ defmodule Ipa.Pod.State.Message do
   @spec pending_approval?(t()) :: boolean()
   def pending_approval?(%__MODULE__{message_type: :approval, approved?: false}), do: true
   def pending_approval?(_), do: false
+
+  @doc "Returns true if this is a review comment."
+  @spec review_comment?(t()) :: boolean()
+  def review_comment?(%__MODULE__{message_type: :review_comment}), do: true
+  def review_comment?(_), do: false
+
+  @doc "Returns true if this review thread is resolved."
+  @spec resolved?(t()) :: boolean()
+  def resolved?(%__MODULE__{message_type: :review_comment, metadata: %{resolved?: true}}), do: true
+  def resolved?(_), do: false
 end
 
 defmodule Ipa.Pod.State.Notification do
