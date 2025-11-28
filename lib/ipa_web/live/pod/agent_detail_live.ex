@@ -20,6 +20,8 @@ defmodule IpaWeb.Pod.AgentDetailLive do
     task_id = session["task_id"]
     agent_id = session["agent_id"]
 
+    editor = Application.get_env(:ipa, :editor_command)
+
     socket =
       socket
       |> assign(task_id: task_id)
@@ -31,6 +33,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
       |> assign(message_input: "")
       |> assign(batch_messages: [])
       |> assign(batch_mode: false)
+      |> assign(editor: editor)
 
     if connected?(socket) && task_id && agent_id do
       Logger.info("AgentDetailLive mounted for agent #{agent_id}, pid=#{inspect(self())}")
@@ -117,41 +120,69 @@ defmodule IpaWeb.Pod.AgentDetailLive do
           </div>
         </div>
 
-    <!-- Metadata bar -->
-        <div class="flex items-center gap-6 px-4 py-2 bg-base-100 border-b border-base-300 text-sm text-base-content/60 font-mono">
-          <span class="flex items-center gap-1">
-            <.icon name="hero-finger-print" class="w-4 h-4" />
-            {@agent.agent_id}
-          </span>
-          <%= if @agent.started_at do %>
-            <span class="flex items-center gap-1">
-              <.icon name="hero-play" class="w-4 h-4" /> Started: {format_time(@agent.started_at)}
-            </span>
-          <% end %>
-          <%= if @agent.completed_at do %>
-            <span class="flex items-center gap-1">
-              <.icon name="hero-check" class="w-4 h-4" />
-              Completed: {format_time(@agent.completed_at)}
-            </span>
-          <% end %>
-        </div>
-
     <!-- Main content - Conversation panel -->
         <div class="flex-1 overflow-hidden flex flex-col">
-          <!-- Header bar -->
-          <div class="px-4 py-2 flex items-center justify-between border-b border-base-300 bg-base-100">
-            <span class="text-sm font-medium text-base-content/70">Conversation</span>
-            <div class="flex items-center gap-3">
-              <% conversation = @agent.conversation_history || [] %>
-              <%= if length(conversation) > 0 do %>
-                <span class="text-xs text-base-content/40">{length(conversation)} messages</span>
-              <% end %>
-              <%= if @agent.status == :running do %>
-                <span class="badge badge-xs badge-info gap-1">
-                  <span class="w-1.5 h-1.5 bg-info-content rounded-full animate-pulse"></span> Live
+          <!-- Header bar with metadata -->
+          <div class="px-2 py-1 flex flex-col gap-1 border-b border-base-300 bg-base-100 text-xs text-base-content/60 font-mono">
+            <!-- Row 1: Basic info -->
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <span class="flex items-center gap-1">
+                  <.icon name="hero-finger-print" class="w-3 h-3" />
+                  {@agent.agent_id}
                 </span>
-              <% end %>
+                <%= if @agent.started_at do %>
+                  <span class="flex items-center gap-1">
+                    <.icon name="hero-play" class="w-3 h-3" /> {format_time(@agent.started_at)}
+                  </span>
+                <% end %>
+                <%= if @agent.completed_at do %>
+                  <span class="flex items-center gap-1">
+                    <.icon name="hero-check" class="w-3 h-3" /> {format_time(@agent.completed_at)}
+                  </span>
+                <% end %>
+              </div>
+              <div class="flex items-center gap-2">
+                <% conversation = @agent.conversation_history || [] %>
+                <%= if length(conversation) > 0 do %>
+                  <span class="text-base-content/40">{length(conversation)} msgs</span>
+                <% end %>
+                <%= if @agent.status == :running do %>
+                  <span class="badge badge-xs badge-info gap-1">
+                    <span class="w-1 h-1 bg-info-content rounded-full animate-pulse"></span> Live
+                  </span>
+                <% end %>
+              </div>
             </div>
+            <!-- Row 2: Workspace path -->
+            <%= if @agent.workspace_path do %>
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-1 flex-1 min-w-0">
+                  <.icon name="hero-folder" class="w-3 h-3 flex-shrink-0" />
+                  <span class="truncate" title={@agent.workspace_path}>{@agent.workspace_path}</span>
+                </div>
+                <div class="flex items-center gap-1 flex-shrink-0">
+                  <%= if @editor do %>
+                    <button
+                      phx-click="open_in_editor"
+                      phx-value-path={@agent.workspace_path}
+                      class="btn btn-ghost btn-xs tooltip tooltip-left"
+                      data-tip={"Open in #{@editor}"}
+                    >
+                      <.icon name="hero-code-bracket" class="w-3 h-3" />
+                    </button>
+                  <% end %>
+                  <button
+                    phx-click={JS.dispatch("phx:copy", to: "#workspace-path-#{@agent.agent_id}")}
+                    class="btn btn-ghost btn-xs tooltip tooltip-left"
+                    data-tip="Copy path"
+                  >
+                    <.icon name="hero-clipboard-document" class="w-3 h-3" />
+                  </button>
+                </div>
+                <input type="hidden" id={"workspace-path-#{@agent.agent_id}"} value={@agent.workspace_path} />
+              </div>
+            <% end %>
           </div>
 
     <!-- Conversation content -->
@@ -600,6 +631,27 @@ defmodule IpaWeb.Pod.AgentDetailLive do
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to mark done: #{inspect(reason)}")}
+    end
+  end
+
+  # Open workspace in editor
+  def handle_event("open_in_editor", %{"path" => path}, socket) do
+    editor = socket.assigns.editor
+
+    if editor do
+      Task.start(fn ->
+        case System.cmd(editor, [path], stderr_to_stdout: true) do
+          {_output, 0} ->
+            Logger.info("Opened #{path} in #{editor}")
+
+          {output, exit_code} ->
+            Logger.warning("Failed to open editor: exit code #{exit_code}, output: #{output}")
+        end
+      end)
+
+      {:noreply, put_flash(socket, :info, "Opening in #{editor}...")}
+    else
+      {:noreply, put_flash(socket, :error, "No editor configured")}
     end
   end
 
