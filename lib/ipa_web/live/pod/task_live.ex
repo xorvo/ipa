@@ -410,6 +410,34 @@ defmodule IpaWeb.Pod.TaskLive do
     end
   end
 
+  # Mark task as done (transition from review to completed)
+  def handle_event("mark_task_done", _params, socket) do
+    %{task_id: task_id} = socket.assigns
+
+    # Request and immediately approve transition to completed
+    with :ok <- ensure_pod_running(task_id),
+         {:ok, _version} <-
+           Manager.execute(task_id, Ipa.Pod.Commands.PhaseCommands, :request_transition, [
+             :completed,
+             "Review complete, marking task as done"
+           ]),
+         {:ok, _version} <-
+           Manager.execute(task_id, Ipa.Pod.Commands.PhaseCommands, :approve_transition, [
+             :completed,
+             "user"
+           ]) do
+      {:noreply, put_flash(socket, :info, "Task marked as done!")}
+    else
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to mark task as done: #{inspect(reason)}")}
+    end
+  end
+
+  # Navigate to workstream detail in workstreams tab
+  def handle_event("navigate_to_workstream", %{"id" => workstream_id}, socket) do
+    {:noreply, push_patch(socket, to: build_url(socket, tab: :workstreams, workstream: workstream_id))}
+  end
+
   # Message input handling
   def handle_event("update_message", %{"value" => value}, socket) do
     {:noreply, assign(socket, message_input: value)}
@@ -706,11 +734,13 @@ defmodule IpaWeb.Pod.TaskLive do
   defp phase_progress_indicator(assigns) do
     phases = [:spec_clarification, :planning, :workstream_execution, :review, :completed]
     current_index = Enum.find_index(phases, &(&1 == assigns.current_phase)) || 0
+    is_completed = assigns.current_phase == :completed
 
     assigns =
       assigns
       |> assign(:phases, phases)
       |> assign(:current_index, current_index)
+      |> assign(:is_completed, is_completed)
 
     ~H"""
     <div class="flex gap-1">
@@ -720,6 +750,8 @@ defmodule IpaWeb.Pod.TaskLive do
           <div class={[
             "h-2 rounded transition-all",
             cond do
+              # When task is completed, all segments are green
+              @is_completed -> "bg-success"
               index < @current_index -> "bg-success"
               index == @current_index -> "bg-primary"
               true -> "bg-base-300"
@@ -729,6 +761,8 @@ defmodule IpaWeb.Pod.TaskLive do
           <span class={[
             "text-xs text-center",
             cond do
+              # When task is completed, all labels are green
+              @is_completed -> "text-success font-medium"
               index < @current_index -> "text-success font-medium"
               index == @current_index -> "text-primary font-semibold"
               true -> "text-base-content/50"
@@ -766,6 +800,9 @@ defmodule IpaWeb.Pod.TaskLive do
 
   # Overview Tab
   defp overview_tab(assigns) do
+    workstreams = Map.values(assigns.state.workstreams || %{})
+    assigns = assign(assigns, :workstreams, workstreams)
+
     ~H"""
     <div class="space-y-6">
       <!-- Pending Transition Banner -->
@@ -786,6 +823,27 @@ defmodule IpaWeb.Pod.TaskLive do
             class="btn btn-sm btn-warning"
           >
             Continue
+          </button>
+        </div>
+      <% end %>
+
+      <!-- Review Phase: Mark as Done Button -->
+      <%= if @state.phase == :review do %>
+        <div class="flex items-center justify-between p-4 bg-success/10 rounded-lg border border-success/30">
+          <div class="flex items-center gap-3">
+            <div class="bg-success/20 p-2 rounded-lg">
+              <.icon name="hero-check-circle" class="w-5 h-5 text-success" />
+            </div>
+            <div>
+              <span class="font-medium">Review Phase</span>
+              <p class="text-sm text-base-content/70">All workstreams completed. Ready to mark task as done?</p>
+            </div>
+          </div>
+          <button
+            phx-click="mark_task_done"
+            class="btn btn-sm btn-success"
+          >
+            <.icon name="hero-check" class="w-4 h-4" /> Mark as Done
           </button>
         </div>
       <% end %>
@@ -923,6 +981,50 @@ defmodule IpaWeb.Pod.TaskLive do
           <p class="text-base-content/60">No plan yet.</p>
         <% end %>
       </.card>
+
+      <!-- Workstreams Section (clickable tiles) -->
+      <%= if length(@workstreams) > 0 do %>
+        <.card title="Workstreams">
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <%= for ws <- @workstreams do %>
+              <.overview_workstream_tile workstream={ws} />
+            <% end %>
+          </div>
+        </.card>
+      <% end %>
+    </div>
+    """
+  end
+
+  # Clickable workstream tile for overview
+  defp overview_workstream_tile(assigns) do
+    status_color = workstream_status_color(assigns.workstream.status)
+    assigns = assign(assigns, :status_color, status_color)
+
+    ~H"""
+    <div
+      class="card bg-base-200 border border-base-300 hover:border-primary hover:shadow-md cursor-pointer transition-all"
+      phx-click="navigate_to_workstream"
+      phx-value-id={@workstream.workstream_id}
+    >
+      <div class="card-body p-4">
+        <div class="flex items-start justify-between">
+          <div class="flex-1 min-w-0">
+            <h4 class="font-semibold text-sm truncate">{@workstream.title}</h4>
+            <code class="text-xs text-base-content/50">{@workstream.workstream_id}</code>
+          </div>
+          <span class={"badge badge-sm #{@status_color}"}>
+            {format_workstream_status(@workstream.status)}
+          </span>
+        </div>
+        <p class="text-xs text-base-content/70 mt-2 line-clamp-2">{@workstream.spec}</p>
+        <%= if @workstream.agent_id do %>
+          <div class="flex items-center gap-1 mt-2 text-xs text-base-content/50">
+            <.icon name="hero-cpu-chip" class="w-3 h-3" />
+            <span class="truncate">{@workstream.agent_id}</span>
+          </div>
+        <% end %>
+      </div>
     </div>
     """
   end
@@ -1665,6 +1767,17 @@ defmodule IpaWeb.Pod.TaskLive do
       :completed -> "badge-success"
       :failed -> "badge-error"
       _ -> "badge-ghost"
+    end
+  end
+
+  defp format_workstream_status(status) do
+    case status do
+      :pending -> "Pending"
+      :in_progress -> "In Progress"
+      :blocked -> "Blocked"
+      :completed -> "Completed"
+      :failed -> "Failed"
+      _ -> to_string(status)
     end
   end
 
