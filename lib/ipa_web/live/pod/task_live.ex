@@ -580,7 +580,7 @@ defmodule IpaWeb.Pod.TaskLive do
     <div class="min-h-screen bg-base-200">
       <!-- Header -->
       <header class="bg-base-100 shadow-sm border-b border-base-300">
-        <div class="max-w-7xl mx-auto px-4 py-4">
+        <div class="px-4 py-4">
           <div class="flex items-center justify-between">
             <div>
               <div class="flex items-center gap-3">
@@ -617,7 +617,7 @@ defmodule IpaWeb.Pod.TaskLive do
       
     <!-- Tab Navigation -->
       <div class="bg-base-100 border-b border-base-300">
-        <div class="max-w-7xl mx-auto px-4">
+        <div class="px-4">
           <nav class="flex gap-4">
             <.tab_button tab={:overview} active={@active_tab} label="Overview" />
             <.tab_button
@@ -644,7 +644,7 @@ defmodule IpaWeb.Pod.TaskLive do
       </div>
       
     <!-- Main Content -->
-      <main class="max-w-7xl mx-auto px-4 py-6">
+      <main class="px-4 py-6">
         <%= case @active_tab do %>
           <% :overview -> %>
             <.overview_tab

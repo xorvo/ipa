@@ -109,7 +109,7 @@ defmodule IpaWeb.DashboardLive do
     <div class="min-h-screen bg-base-200">
       <!-- Header -->
       <header class="bg-base-100 shadow-sm border-b border-base-300">
-        <div class="max-w-7xl mx-auto px-4 py-6">
+        <div class="px-4 py-6">
           <div class="flex items-center justify-between">
             <div>
               <h1 class="text-2xl font-bold text-base-content">IPA Dashboard</h1>
@@ -124,7 +124,7 @@ defmodule IpaWeb.DashboardLive do
       
     <!-- Stats Bar -->
       <div class="bg-base-100 border-b border-base-300">
-        <div class="max-w-7xl mx-auto px-4 py-4">
+        <div class="px-4 py-4">
           <div class="flex items-center gap-8">
             <div class="flex items-center gap-2">
               <div class="badge badge-lg badge-primary">{length(@tasks)}</div>
@@ -156,7 +156,7 @@ defmodule IpaWeb.DashboardLive do
       </div>
       
     <!-- Task List -->
-      <main class="max-w-7xl mx-auto px-4 py-6">
+      <main class="px-4 py-6">
         <%= if Enum.empty?(@tasks) do %>
           <div class="text-center py-16">
             <.icon name="hero-inbox" class="w-16 h-16 mx-auto text-base-content/30 mb-4" />
