@@ -287,8 +287,33 @@ defmodule Ipa.Pod.Manager do
         case persist_and_apply_events(state, events) do
           {:ok, new_state} ->
             broadcast_state_update(new_state)
+
+            # Also complete the workstream if this agent belongs to one
+            # This ensures manual "mark done" has the same effect as natural completion
+            workstream_id = find_workstream_for_agent(new_state, agent_id)
+
+            final_state =
+              if workstream_id do
+                case WorkstreamCommands.complete_workstream(new_state, workstream_id, %{}) do
+                  {:ok, ws_events} ->
+                    case persist_and_apply_events(new_state, ws_events) do
+                      {:ok, updated_state} ->
+                        broadcast_state_update(updated_state)
+                        updated_state
+
+                      _ ->
+                        new_state
+                    end
+
+                  _ ->
+                    new_state
+                end
+              else
+                new_state
+              end
+
             send(self(), :evaluate)
-            {:reply, {:ok, new_state.version}, new_state}
+            {:reply, {:ok, final_state.version}, final_state}
 
           {:error, reason} ->
             {:reply, {:error, reason}, state}

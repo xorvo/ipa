@@ -154,6 +154,11 @@ defmodule IpaWeb.Pod.TaskLive do
 
   # State updates from State GenServer (when pod is running)
   # These are still useful for state changes that come through the pod
+  # Guard against nil state - reload from event store instead
+  def handle_info({:state_updated, _task_id, nil}, socket) do
+    reload_state(socket)
+  end
+
   def handle_info({:state_updated, _task_id, new_state}, socket) do
     {:noreply,
      socket
