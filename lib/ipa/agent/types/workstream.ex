@@ -114,6 +114,12 @@ defmodule Ipa.Agent.Types.Workstream do
   # Private Functions
   # ============================================================================
 
+  defp workstream_complete?(nil) do
+    # No workspace path set - can't check for completion marker
+    # Return false to trigger failure handling
+    false
+  end
+
   defp workstream_complete?(workspace) do
     # Check for WORKSTREAM_COMPLETE.md marker file
     marker_paths = [

@@ -1,70 +1,75 @@
-defmodule IpaWeb.Live.Components.AgentPanel do
+defmodule IpaWeb.Pod.AgentPanelLive do
   @moduledoc """
-  LiveComponent for displaying real-time agent execution status.
+  Nested LiveView for displaying real-time agent execution status.
 
-  This component provides visibility into running agents:
-  - Agent identity (type, workstream association)
-  - Current status with visual indicators
-  - Streaming response output
-  - Tool call history with results
+  This is a nested LiveView (not a LiveComponent) so it has its own process
+  and can receive PubSub messages directly for streaming updates.
 
   ## Usage
 
-      <.live_component
-        module={IpaWeb.Live.Components.AgentPanel}
-        id="agent-panel"
-        task_id={@task_id}
-        agents={@agents}
-      />
+      <%= live_render(@socket, IpaWeb.Pod.AgentPanelLive,
+        id: "agent-panel",
+        session: %{"task_id" => @task_id}
+      ) %>
 
   ## PubSub Subscriptions
 
-  When mounted, this component subscribes to:
+  When mounted, this LiveView subscribes to:
   - `"task:{task_id}:agents"` - For agent lifecycle events
   - `"agent:{agent_id}:stream"` - For streaming updates (subscribed per-agent)
   """
 
-  use IpaWeb, :live_component
+  use IpaWeb, :live_view
 
   require Logger
 
   @impl true
-  def mount(socket) do
-    {:ok,
-     socket
-     |> assign(expanded_agents: MapSet.new())
-     |> assign(streaming_outputs: %{})}
-  end
+  def mount(_params, session, socket) do
+    task_id = session["task_id"]
 
-  @impl true
-  def update(assigns, socket) do
-    socket = assign(socket, assigns)
+    socket =
+      socket
+      |> assign(task_id: task_id)
+      |> assign(agents: [])
+      |> assign(expanded_agents: MapSet.new())
+      |> assign(streaming_outputs: %{})
+      |> assign(selected_agent_id: nil)
 
-    # Subscribe to agent events if connected and task_id is set
-    if connected?(socket) && assigns[:task_id] do
-      task_id = assigns.task_id
+    if connected?(socket) && task_id do
+      Logger.info("AgentPanelLive mounted for task #{task_id}")
 
       # Subscribe to task-level agent events
       Phoenix.PubSub.subscribe(Ipa.PubSub, "task:#{task_id}:agents")
+      Logger.debug("Subscribed to task:#{task_id}:agents")
 
-      # Subscribe to streaming updates for each active agent
-      agents = assigns[:agents] || []
+      # Subscribe to EventStore for agent events
+      Ipa.EventStore.subscribe(task_id)
 
-      for agent <- agents, agent.status in [:initializing, :running] do
-        Phoenix.PubSub.subscribe(Ipa.PubSub, "agent:#{agent.agent_id}:stream")
+      # Load initial agents from state
+      case Ipa.Pod.Manager.get_state_from_events(task_id) do
+        {:ok, state} ->
+          agents = state.agents || []
+          Logger.info("AgentPanelLive loaded #{length(agents)} agents")
+
+          # Subscribe to streaming updates for each active agent
+          for agent <- agents, agent.status in [:initializing, :running] do
+            Logger.info("Subscribing to agent:#{agent.agent_id}:stream (status: #{agent.status})")
+            Phoenix.PubSub.subscribe(Ipa.PubSub, "agent:#{agent.agent_id}:stream")
+          end
+
+          # Initialize streaming_outputs with persisted output for completed agents
+          # This ensures output is visible when the panel loads
+          streaming_outputs =
+            agents
+            |> Enum.filter(fn a -> a.status in [:completed, :failed] && a.output end)
+            |> Enum.map(fn a -> {a.agent_id, a.output} end)
+            |> Map.new()
+
+          {:ok, assign(socket, agents: agents, streaming_outputs: streaming_outputs)}
+
+        {:error, _} ->
+          {:ok, socket}
       end
-
-      # Initialize streaming_outputs with persisted output for completed agents
-      # This ensures output is visible when the component loads
-      existing_outputs = socket.assigns[:streaming_outputs] || %{}
-      new_outputs =
-        agents
-        |> Enum.filter(fn a -> a.status in [:completed, :failed] && a.output && not Map.has_key?(existing_outputs, a.agent_id) end)
-        |> Enum.map(fn a -> {a.agent_id, a.output} end)
-        |> Map.new()
-
-      merged_outputs = Map.merge(existing_outputs, new_outputs)
-      {:ok, assign(socket, streaming_outputs: merged_outputs)}
     else
       {:ok, socket}
     end
@@ -131,7 +136,6 @@ defmodule IpaWeb.Live.Components.AgentPanel do
                 agent={agent}
                 expanded={true}
                 streaming_output={Map.get(@streaming_outputs, agent.agent_id, "")}
-                myself={@myself}
               />
             <% end %>
           </div>
@@ -148,11 +152,33 @@ defmodule IpaWeb.Live.Components.AgentPanel do
                 agent={agent}
                 expanded={MapSet.member?(@expanded_agents, agent.agent_id)}
                 streaming_output={Map.get(@streaming_outputs, agent.agent_id, "")}
-                myself={@myself}
               />
             <% end %>
           </div>
         <% end %>
+      <% end %>
+
+      <!-- Agent Detail Modal -->
+      <%= if @selected_agent_id do %>
+        <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
+          <!-- Backdrop click handler -->
+          <div class="absolute inset-0" phx-click="close_agent_detail"></div>
+          <!-- Modal content -->
+          <div class="relative bg-base-100 rounded-xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden">
+            <!-- Close button -->
+            <button
+              phx-click="close_agent_detail"
+              class="absolute top-4 right-4 z-10 btn btn-sm btn-circle btn-ghost"
+            >
+              <.icon name="hero-x-mark" class="w-5 h-5" />
+            </button>
+            <!-- Agent Detail LiveView -->
+            <%= live_render(@socket, IpaWeb.Pod.AgentDetailLive,
+              id: "agent-detail-#{@selected_agent_id}",
+              session: %{"task_id" => @task_id, "agent_id" => @selected_agent_id}
+            ) %>
+          </div>
+        </div>
       <% end %>
     </div>
     """
@@ -176,6 +202,20 @@ defmodule IpaWeb.Live.Components.AgentPanel do
     {:noreply, assign(socket, expanded_agents: new_expanded)}
   end
 
+  def handle_event("view_agent_detail", %{"agent_id" => agent_id}, socket) do
+    Logger.debug("Opening agent detail view for #{agent_id}")
+    {:noreply, assign(socket, selected_agent_id: agent_id)}
+  end
+
+  def handle_event("close_agent_detail", _params, socket) do
+    {:noreply, assign(socket, selected_agent_id: nil)}
+  end
+
+  # No-op handler to stop click propagation from control buttons
+  def handle_event("noop", _params, socket) do
+    {:noreply, socket}
+  end
+
   def handle_event("interrupt_agent", %{"agent_id" => agent_id}, socket) do
     Logger.info("Interrupting agent from UI", agent_id: agent_id)
 
@@ -183,8 +223,27 @@ defmodule IpaWeb.Live.Components.AgentPanel do
       :ok ->
         {:noreply, put_flash(socket, :info, "Agent interrupted")}
 
+      {:error, :not_found} ->
+        # Agent process is gone - reload agents to get fresh state
+        Logger.warning("Agent #{agent_id} not found - process may have crashed")
+        socket = reload_agents(socket)
+        {:noreply, put_flash(socket, :warning, "Agent process not found - it may have already stopped")}
+
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to interrupt: #{inspect(reason)}")}
+    end
+  end
+
+  defp reload_agents(socket) do
+    task_id = socket.assigns.task_id
+
+    case Ipa.Pod.Manager.get_state_from_events(task_id) do
+      {:ok, state} ->
+        agents = state.agents || []
+        assign(socket, agents: agents)
+
+      {:error, _} ->
+        socket
     end
   end
 
@@ -194,7 +253,9 @@ defmodule IpaWeb.Live.Components.AgentPanel do
 
   # Handle streaming text delta from agent
   # Format from Instance: {:text_delta, agent_id, %{text: text}}
+  @impl true
   def handle_info({:text_delta, agent_id, %{text: text}}, socket) do
+    Logger.debug("Received text_delta for agent #{agent_id}: #{String.slice(text, 0, 50)}...")
     streaming_outputs = socket.assigns.streaming_outputs
     current = Map.get(streaming_outputs, agent_id, "")
     new_outputs = Map.put(streaming_outputs, agent_id, current <> text)
@@ -224,7 +285,7 @@ defmodule IpaWeb.Live.Components.AgentPanel do
   end
 
   # Handle agent lifecycle events (from task:task_id:agents topic)
-  # Format: {:agent_started, agent_id} (just the agent_id, no data)
+  # Format: {:agent_started, agent_id}
   def handle_info({:agent_started, agent_id}, socket) do
     Logger.debug("Agent started in panel", agent_id: agent_id)
     # Subscribe to this agent's stream
@@ -234,7 +295,6 @@ defmodule IpaWeb.Live.Components.AgentPanel do
 
   def handle_info({:agent_completed, agent_id}, socket) do
     Logger.debug("Agent completed in panel", agent_id: agent_id)
-    # Unsubscribe from agent stream
     Phoenix.PubSub.unsubscribe(Ipa.PubSub, "agent:#{agent_id}:stream")
     {:noreply, socket}
   end
@@ -251,8 +311,35 @@ defmodule IpaWeb.Live.Components.AgentPanel do
     {:noreply, socket}
   end
 
+  # Handle EventStore broadcasts to update agent list
+  def handle_info({:event_appended, task_id, event}, socket)
+      when task_id == socket.assigns.task_id do
+    case event.event_type do
+      type when type in ["agent_started", "agent_completed", "agent_failed", "agent_status_changed"] ->
+        # Reload agents from state
+        case Ipa.Pod.Manager.get_state_from_events(task_id) do
+          {:ok, state} ->
+            agents = state.agents || []
+
+            # Subscribe to new running agents
+            for agent <- agents, agent.status in [:initializing, :running] do
+              Phoenix.PubSub.subscribe(Ipa.PubSub, "agent:#{agent.agent_id}:stream")
+            end
+
+            {:noreply, assign(socket, agents: agents)}
+
+          {:error, _} ->
+            {:noreply, socket}
+        end
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
   # Catch-all for other messages
-  def handle_info(_msg, socket) do
+  def handle_info(msg, socket) do
+    Logger.debug("AgentPanelLive received unhandled message: #{inspect(msg)}")
     {:noreply, socket}
   end
 
@@ -268,14 +355,19 @@ defmodule IpaWeb.Live.Components.AgentPanel do
     # Use streaming output for running agents, otherwise use persisted output from state
     output = assigns.streaming_output || assigns.agent.output || ""
 
+    assigns = assign(assigns, :process_alive, process_alive)
+
     assigns =
       assigns
       |> assign(:is_running, is_running)
-      |> assign(:process_alive, process_alive)
       |> assign(:output, output)
 
     ~H"""
-    <div class={"card shadow-lg border transition-all duration-300 #{if @is_running, do: "bg-base-100 border-info/50 ring-2 ring-info/20", else: "bg-base-100 border-base-300"}"}>
+    <div
+      class={"card shadow-lg border transition-all duration-300 cursor-pointer hover:shadow-xl #{if @is_running, do: "bg-base-100 border-info/50 ring-2 ring-info/20", else: "bg-base-100 border-base-300 hover:border-primary/30"}"}
+      phx-click="view_agent_detail"
+      phx-value-agent_id={@agent.agent_id}
+    >
       <div class="card-body p-4">
         <!-- Header -->
         <div class="flex items-center justify-between">
@@ -296,12 +388,12 @@ defmodule IpaWeb.Live.Components.AgentPanel do
             </div>
           </div>
 
-          <div class="flex items-center gap-2">
+          <!-- Control buttons - click events stop propagation to parent -->
+          <div class="flex items-center gap-2" phx-click="noop" phx-value-stop="true">
             <%= if @process_alive do %>
               <button
                 phx-click="interrupt_agent"
                 phx-value-agent_id={@agent.agent_id}
-                phx-target={@myself}
                 class="btn btn-xs btn-error gap-1"
               >
                 <.icon name="hero-stop" class="w-3 h-3" />
@@ -316,7 +408,6 @@ defmodule IpaWeb.Live.Components.AgentPanel do
             <button
               phx-click="toggle_agent"
               phx-value-agent_id={@agent.agent_id}
-              phx-target={@myself}
               class="btn btn-xs btn-ghost btn-circle"
             >
               <%= if @expanded do %>
@@ -351,14 +442,13 @@ defmodule IpaWeb.Live.Components.AgentPanel do
         <!-- Expanded content -->
         <%= if @expanded do %>
           <div class="mt-4 space-y-4">
-            <!-- Terminal-style streaming output -->
+            <!-- Output panel -->
             <div class="relative">
               <div class="flex items-center justify-between mb-2">
                 <h4 class="font-medium text-sm flex items-center gap-2">
-                  <.icon name="hero-command-line" class="w-4 h-4" />
                   Agent Output
                   <%= if @is_running do %>
-                    <span class="badge badge-xs badge-info">LIVE</span>
+                    <span class="badge badge-xs badge-info">Live</span>
                   <% end %>
                 </h4>
                 <% char_count = String.length(@output) %>
@@ -367,44 +457,26 @@ defmodule IpaWeb.Live.Components.AgentPanel do
                 <% end %>
               </div>
 
-              <!-- Terminal window -->
-              <div class="rounded-lg overflow-hidden border border-base-300 shadow-inner">
-                <!-- Terminal header bar -->
-                <div class="bg-base-300 px-3 py-1.5 flex items-center gap-2 border-b border-base-content/10">
-                  <div class="flex gap-1.5">
-                    <span class="w-3 h-3 rounded-full bg-error/60"></span>
-                    <span class="w-3 h-3 rounded-full bg-warning/60"></span>
-                    <span class="w-3 h-3 rounded-full bg-success/60"></span>
-                  </div>
-                  <span class="text-xs text-base-content/50 font-mono ml-2">
-                    agent@ipa ~ streaming
-                  </span>
-                </div>
-
-                <!-- Terminal content -->
-                <div
-                  class="p-4 font-mono text-sm min-h-[200px] max-h-[500px] overflow-y-auto scroll-smooth"
-                  style="background-color: #1e1e2e; color: #cdd6f4;"
-                  id={"terminal-#{@agent.agent_id}"}
-                  phx-hook="AutoScroll"
-                >
-                  <%= if @output != "" do %>
-                    <pre class="whitespace-pre-wrap break-words leading-relaxed"><%= @output %></pre>
-                    <%= if @is_running do %>
-                      <span class="inline-block w-2 h-4 animate-pulse ml-0.5" style="background-color: #89b4fa;"></span>
-                    <% end %>
-                  <% else %>
-                    <div class="flex items-center gap-2" style="color: #6c7086;">
-                      <span style="color: #89b4fa;">$</span>
-                      <%= if @is_running do %>
-                        <span>Waiting for agent output...</span>
-                        <span class="inline-block w-2 h-4 animate-pulse" style="background-color: #89b4fa;"></span>
-                      <% else %>
-                        <span>No output recorded</span>
-                      <% end %>
-                    </div>
+              <!-- Output content -->
+              <div
+                class="rounded-lg p-3 min-h-[120px] max-h-[300px] overflow-y-auto bg-neutral text-neutral-content/90"
+                id={"output-#{@agent.agent_id}"}
+                phx-hook="AutoScroll"
+              >
+                <%= if @output != "" do %>
+                  <div class="text-xs leading-relaxed whitespace-pre-wrap break-words"><%= @output %></div>
+                  <%= if @is_running do %>
+                    <span class="inline-block w-1.5 h-3 bg-info animate-pulse ml-0.5"></span>
                   <% end %>
-                </div>
+                <% else %>
+                  <div class="text-xs text-neutral-content/50">
+                    <%= if @is_running do %>
+                      Waiting for agent output...
+                    <% else %>
+                      No output recorded
+                    <% end %>
+                  </div>
+                <% end %>
               </div>
             </div>
 

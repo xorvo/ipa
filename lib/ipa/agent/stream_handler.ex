@@ -64,19 +64,20 @@ defmodule Ipa.Agent.StreamHandler do
     case msg_type do
       # New SDK format: %{type: :chunk, content: text}
       :chunk ->
-        content = message[:content] || message["content"] || ""
+        content = get_field(message, :content) || ""
         {:text_delta, content}
 
       # New SDK format: %{type: :tool_use, name: name, input: args}
+      # ClaudeAgentSdkTs.Response struct uses :tool_name and :tool_input
       :tool_use ->
-        name = message[:name] || message["name"] || "unknown"
-        input = message[:input] || message["input"] || %{}
+        name = get_field(message, :tool_name) || get_field(message, :name) || "unknown"
+        input = get_field(message, :tool_input) || get_field(message, :input) || %{}
         {:tool_use_start, name, input}
 
       # New SDK format: %{type: :tool_result, name: name, output: result}
       :tool_result ->
-        name = message[:name] || message["name"]
-        output = message[:output] || message["output"] || ""
+        name = get_field(message, :tool_name) || get_field(message, :name)
+        output = get_field(message, :output) || ""
         {:tool_complete, name, output}
 
       # New SDK format: %{type: :end}
@@ -85,7 +86,7 @@ defmodule Ipa.Agent.StreamHandler do
 
       # New SDK format: %{type: :error, message: msg}
       :error ->
-        error = message[:message] || message["message"] || "Unknown error"
+        error = get_field(message, :message) || get_field(message, :error) || "Unknown error"
         {:error, error}
 
       # Legacy format support for backwards compatibility during transition
@@ -355,4 +356,10 @@ defmodule Ipa.Agent.StreamHandler do
   end
 
   defp extract_text_from_content_array(_), do: ""
+
+  # Helper to safely get field from struct or map without requiring Access behaviour
+  defp get_field(nil, _key), do: nil
+  defp get_field(struct, key) when is_struct(struct), do: Map.get(struct, key)
+  defp get_field(map, key) when is_map(map) and is_atom(key), do: map[key] || map[Atom.to_string(key)]
+  defp get_field(_, _), do: nil
 end

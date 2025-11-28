@@ -70,12 +70,13 @@ defmodule Ipa.Pod.Events.AgentCompleted do
   @behaviour Ipa.Pod.Event
 
   @enforce_keys [:task_id, :agent_id]
-  defstruct [:task_id, :agent_id, :result_summary]
+  defstruct [:task_id, :agent_id, :result_summary, :output]
 
   @type t :: %__MODULE__{
           task_id: String.t(),
           agent_id: String.t(),
-          result_summary: String.t() | nil
+          result_summary: String.t() | nil,
+          output: String.t() | nil
         }
 
   @impl true
@@ -86,7 +87,8 @@ defmodule Ipa.Pod.Events.AgentCompleted do
     %{
       task_id: event.task_id,
       agent_id: event.agent_id,
-      result_summary: event.result_summary
+      result_summary: event.result_summary,
+      output: event.output
     }
   end
 
@@ -95,7 +97,8 @@ defmodule Ipa.Pod.Events.AgentCompleted do
     %__MODULE__{
       task_id: get_field(data, :task_id),
       agent_id: get_field(data, :agent_id),
-      result_summary: get_field(data, :result_summary)
+      result_summary: get_field(data, :result_summary),
+      output: get_field(data, :output)
     }
   end
 

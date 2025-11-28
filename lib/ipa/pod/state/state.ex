@@ -267,6 +267,7 @@ defmodule Ipa.Pod.State.Agent do
     :started_at,
     :completed_at,
     :error,
+    :output,
     status: :running
   ]
 
@@ -278,7 +279,8 @@ defmodule Ipa.Pod.State.Agent do
           status: status(),
           started_at: integer() | nil,
           completed_at: integer() | nil,
-          error: String.t() | nil
+          error: String.t() | nil,
+          output: String.t() | nil
         }
 
   @doc "Returns true if agent is running."

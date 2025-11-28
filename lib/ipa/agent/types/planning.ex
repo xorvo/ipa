@@ -42,34 +42,47 @@ defmodule Ipa.Agent.Types.Planning do
   @impl true
   def generate_prompt(context) do
     task = context[:task] || %{}
-    spec = task[:spec] || %{}
+
+    # Handle both struct and map access for task
+    spec = get_field(task, :spec) || %{}
 
     spec_description =
       cond do
-        is_binary(spec[:description]) -> spec[:description]
+        is_binary(get_field(spec, :description)) -> get_field(spec, :description)
         is_binary(spec["description"]) -> spec["description"]
         true -> "No spec description provided"
       end
 
-    task_title = task[:title] || task["title"] || "Untitled Task"
+    task_title = get_field(task, :title) || task["title"] || "Untitled Task"
 
     """
     Task: #{task_title}
 
     Spec: #{spec_description}
 
-    Your role: Break this task down into parallel workstreams.
+    Your role: Analyze this task and determine if it needs to be split into workstreams.
+
+    ## Guidelines for Workstream Planning
+
+    **Prefer fewer, larger workstreams over many small ones.**
+
+    A single workstream is often best when:
+    - The task is cohesive and naturally flows from one step to the next
+    - Splitting would create artificial boundaries that slow down work
+    - The total effort is under ~1 week for one person
+    - Components are tightly coupled and share significant context
+
+    Multiple workstreams make sense when:
+    - There are truly independent components that different people could work on simultaneously
+    - There's a clear separation of concerns (e.g., frontend vs backend vs infrastructure)
+    - One part has significantly different dependencies or expertise requirements
+
+    **When in doubt, keep it as one workstream.** Over-splitting creates coordination overhead.
 
     Each workstream should:
-    - Be independently executable (minimal dependencies)
-    - Have a clear, specific goal
-    - Be assignable to one agent
-    - Take approximately 1-3 days
-
-    Consider:
-    - What can be done in parallel?
-    - What dependencies exist between workstreams?
-    - What's the critical path?
+    - Represent a meaningful, complete unit of work
+    - Have clear boundaries and deliverables
+    - Be substantial enough to justify the overhead of separate execution
 
     IMPORTANT: You are running in an isolated workspace directory. All file operations should use RELATIVE paths only.
     Write your output to a file named `workstreams_plan.json` in the CURRENT DIRECTORY (use relative path, NOT absolute).
@@ -79,20 +92,15 @@ defmodule Ipa.Agent.Types.Planning do
       "workstreams": [
         {
           "id": "ws-1",
-          "title": "Set up database schema",
-          "description": "...",
+          "title": "Implement user authentication system",
+          "description": "Build the complete auth flow including login, registration, password reset, and session management",
           "dependencies": [],
-          "estimated_hours": 8
-        },
-        {
-          "id": "ws-2",
-          "title": "Implement API endpoints",
-          "description": "...",
-          "dependencies": ["ws-1"],
-          "estimated_hours": 12
+          "estimated_hours": 24
         }
       ]
     }
+
+    Note: It is perfectly acceptable to output just ONE workstream if the task doesn't benefit from splitting.
     """
   end
 
@@ -113,7 +121,8 @@ defmodule Ipa.Agent.Types.Planning do
   @impl true
   def handle_completion(result, context) do
     workspace = result[:workspace]
-    task_id = context[:task_id] || context[:task][:task_id]
+    task = context[:task]
+    task_id = context[:task_id] || get_field(task, :task_id)
 
     Logger.info("Planning agent completed, reading workstreams plan",
       task_id: task_id,
@@ -214,4 +223,10 @@ defmodule Ipa.Agent.Types.Planning do
   end
 
   defp calculate_total_hours(_), do: 0.0
+
+  # Helper to access struct or map fields uniformly
+  defp get_field(nil, _key), do: nil
+  defp get_field(struct, key) when is_struct(struct), do: Map.get(struct, key)
+  defp get_field(map, key) when is_map(map), do: map[key]
+  defp get_field(_, _), do: nil
 end

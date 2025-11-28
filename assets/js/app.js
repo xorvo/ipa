@@ -26,10 +26,37 @@ import {hooks as colocatedHooks} from "phoenix-colocated/ipa"
 import topbar from "../vendor/topbar"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
+
+// Custom hooks for LiveView components
+const Hooks = {
+  // Auto-scroll hook for terminal/streaming output containers
+  AutoScroll: {
+    mounted() {
+      this.scrollToBottom()
+      // Use MutationObserver to detect content changes
+      this.observer = new MutationObserver(() => {
+        this.scrollToBottom()
+      })
+      this.observer.observe(this.el, { childList: true, subtree: true, characterData: true })
+    },
+    updated() {
+      this.scrollToBottom()
+    },
+    destroyed() {
+      if (this.observer) {
+        this.observer.disconnect()
+      }
+    },
+    scrollToBottom() {
+      this.el.scrollTop = this.el.scrollHeight
+    }
+  }
+}
+
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks},
+  hooks: {...colocatedHooks, ...Hooks},
 })
 
 // Show progress bar on live navigation and form submits

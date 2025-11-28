@@ -101,6 +101,14 @@ defmodule Ipa.Agent.Instance do
   end
 
   @doc """
+  Checks if an agent process is alive.
+  """
+  @spec alive?(String.t()) :: boolean()
+  def alive?(agent_id) do
+    GenServer.whereis(via_tuple(agent_id)) != nil
+  end
+
+  @doc """
   Interrupts a running agent, canceling the SDK query.
   """
   @spec interrupt(String.t()) :: :ok | {:error, :not_found}
@@ -147,29 +155,21 @@ defmodule Ipa.Agent.Instance do
       context: context
     }
 
-    # Schedule lifecycle event recording and query to run after init completes
+    # Schedule notification and query to run after init completes
     # This prevents init from blocking on GenServer calls which can cause timeouts
-    send(self(), {:record_agent_started, agent_type.agent_type(), context[:workspace], context[:workstream_id], prompt})
+    # NOTE: The agent_started event is already recorded by Pod.Manager through AgentCommands
+    # when it starts this agent. We only need to broadcast the PubSub notification here.
+    send(self(), :notify_agent_started)
     send(self(), {:run_query, prompt, options})
 
     {:ok, state}
   end
 
   @impl true
-  def handle_info({:record_agent_started, agent_type_name, workspace, workstream_id, prompt}, state) do
-    # Record agent_started event to Event Store (source of truth)
-    # Done asynchronously to prevent init timeouts
-    truncated_prompt = String.slice(prompt, 0, 5000)
-
-    record_lifecycle_event(state, "agent_started", %{
-      agent_id: state.agent_id,
-      agent_type: to_string(agent_type_name),
-      workspace: workspace,
-      workstream_id: workstream_id,
-      prompt: truncated_prompt
-    })
-
+  def handle_info(:notify_agent_started, state) do
     # Notify via PubSub (just a signal, no data)
+    # NOTE: The agent_started event is already recorded by Pod.Manager through AgentCommands
+    # We only broadcast the notification here for real-time UI updates
     notify_lifecycle(state, :agent_started)
 
     {:noreply, state}
@@ -307,14 +307,27 @@ defmodule Ipa.Agent.Instance do
       claude_opts = convert_options_to_claude_agent_sdk(options)
 
       # Stream query results back to the parent GenServer
-      # Using ClaudeAgentSdkTs.stream/3 with callback
-      final_messages =
-        ClaudeAgentSdkTs.stream(prompt, claude_opts, fn message ->
-          send(parent, {:stream_message, message})
-        end)
-        |> Enum.to_list()
+      # ClaudeAgentSdkTs.stream/3 uses a callback for streaming and returns :ok when done
+      # Messages are sent via the callback, so we don't need to enumerate anything
+      result = ClaudeAgentSdkTs.stream(prompt, claude_opts, fn message ->
+        send(parent, {:stream_message, message})
+      end)
 
-      {:ok, final_messages}
+      case result do
+        :ok ->
+          {:ok, :completed}
+
+        {:ok, response} ->
+          {:ok, response}
+
+        {:error, reason} ->
+          {:error, reason}
+
+        other ->
+          # Handle unexpected return values gracefully
+          Logger.warning("Unexpected return from ClaudeAgentSdkTs.stream: #{inspect(other)}")
+          {:ok, other}
+      end
     rescue
       error ->
         {:error, {error, __STACKTRACE__}}
@@ -430,10 +443,12 @@ defmodule Ipa.Agent.Instance do
       end
 
     # Record to Event Store (source of truth)
+    # Store the full output for persistent history (not truncated)
     record_lifecycle_event(new_state, "agent_completed", %{
       agent_id: state.agent_id,
       duration_ms: duration_ms,
-      result: String.slice(state.current_response, 0, 1000),
+      result_summary: String.slice(state.current_response, 0, 1000),
+      output: state.current_response,
       completion_handler_result: serializable_completion_result
     })
 

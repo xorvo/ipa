@@ -13,16 +13,24 @@ defmodule Ipa.Pod.State.Projections.AgentProjection do
   @doc "Applies an agent event to state."
   @spec apply(State.t(), struct()) :: State.t()
   def apply(state, %AgentStarted{} = event) do
-    agent = %Agent{
-      agent_id: event.agent_id,
-      agent_type: event.agent_type,
-      workstream_id: event.workstream_id,
-      workspace_path: event.workspace_path,
-      status: :running,
-      started_at: System.system_time(:second)
-    }
+    # Check if agent already exists (prevent duplicates)
+    existing = Enum.find(state.agents, fn a -> a.agent_id == event.agent_id end)
 
-    %{state | agents: [agent | state.agents]}
+    if existing do
+      # Agent already exists, don't add duplicate
+      state
+    else
+      agent = %Agent{
+        agent_id: event.agent_id,
+        agent_type: event.agent_type,
+        workstream_id: event.workstream_id,
+        workspace_path: event.workspace_path,
+        status: :running,
+        started_at: System.system_time(:second)
+      }
+
+      %{state | agents: [agent | state.agents]}
+    end
   end
 
   def apply(state, %AgentCompleted{} = event) do
@@ -30,7 +38,8 @@ defmodule Ipa.Pod.State.Projections.AgentProjection do
       %{
         agent
         | status: :completed,
-          completed_at: System.system_time(:second)
+          completed_at: System.system_time(:second),
+          output: event.output
       }
     end)
   end

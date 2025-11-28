@@ -49,6 +49,7 @@ defmodule IpaWeb.Pod.TaskLive do
           |> assign(events: Enum.reverse(events))
           |> assign(event_filter: "all")
           |> assign(selected_event: nil)
+          |> assign(show_debug_modal: false)
 
         {:ok, socket}
 
@@ -149,12 +150,11 @@ defmodule IpaWeb.Pod.TaskLive do
         %{state | spec: new_spec, version: event.version, updated_at: event.inserted_at}
 
       "plan_approved" when state.plan != nil ->
-        new_plan = %{
+        new_plan =
           state.plan
-          | approved?: true,
-            approved_by: event.data[:approved_by],
-            approved_at: event.inserted_at
-        }
+          |> Map.put(:approved?, true)
+          |> Map.put(:approved_by, event.data[:approved_by])
+          |> Map.put(:approved_at, event.inserted_at)
 
         %{state | plan: new_plan, version: event.version, updated_at: event.inserted_at}
 
@@ -444,6 +444,14 @@ defmodule IpaWeb.Pod.TaskLive do
     end
   end
 
+  def handle_event("show_debug_modal", _params, socket) do
+    {:noreply, assign(socket, show_debug_modal: true)}
+  end
+
+  def handle_event("hide_debug_modal", _params, socket) do
+    {:noreply, assign(socket, show_debug_modal: false)}
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -460,12 +468,21 @@ defmodule IpaWeb.Pod.TaskLive do
                 <h1 class="text-xl font-semibold text-base-content">
                   {@state.title || "Untitled Task"}
                 </h1>
+                <.pod_status_badge task_id={@task_id} />
               </div>
               <p class="text-sm text-base-content/60 mt-1">
                 Task ID: <code class="bg-base-200 px-1 rounded">{@task_id}</code>
               </p>
             </div>
-            <div class="flex items-center gap-3">
+            <div class="flex items-center gap-2">
+              <button
+                phx-click="show_debug_modal"
+                class="btn btn-sm btn-outline gap-1"
+                title="View raw pod state"
+              >
+                <.icon name="hero-code-bracket" class="w-4 h-4" />
+                Debug
+              </button>
               <.pod_control_button task_id={@task_id} />
             </div>
           </div>
@@ -473,10 +490,8 @@ defmodule IpaWeb.Pod.TaskLive do
       </header>
 
     <!-- Phase Progress Indicator -->
-      <div class="bg-base-100 border-b border-base-300">
-        <div class="max-w-7xl mx-auto px-4 py-3">
-          <.phase_progress_indicator current_phase={@state.phase} />
-        </div>
+      <div class="bg-base-100 border-b border-base-300 px-8 py-3">
+        <.phase_progress_indicator current_phase={@state.phase} />
       </div>
 
     <!-- Tab Navigation -->
@@ -520,12 +535,10 @@ defmodule IpaWeb.Pod.TaskLive do
           <% :workstreams -> %>
             <.workstreams_tab state={@state} selected_id={@selected_workstream_id} />
           <% :agents -> %>
-            <.live_component
-              module={IpaWeb.Live.Components.AgentPanel}
-              id="agent-panel"
-              task_id={@task_id}
-              agents={@state.agents || []}
-            />
+            <%= live_render(@socket, IpaWeb.Pod.AgentPanelLive,
+              id: "agent-panel",
+              session: %{"task_id" => @task_id}
+            ) %>
           <% :communications -> %>
             <.communications_tab state={@state} task_id={@task_id} message_input={@message_input} />
           <% :events -> %>
@@ -536,32 +549,64 @@ defmodule IpaWeb.Pod.TaskLive do
             />
         <% end %>
       </main>
+
+      <!-- Debug Modal -->
+      <%= if @show_debug_modal do %>
+        <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <!-- Backdrop click handler -->
+          <div class="absolute inset-0" phx-click="hide_debug_modal"></div>
+          <!-- Modal content -->
+          <div class="relative bg-base-100 rounded-lg shadow-xl w-full max-w-4xl max-h-[80vh] flex flex-col">
+            <div class="flex items-center justify-between p-4 border-b border-base-300">
+              <h3 class="text-lg font-semibold flex items-center gap-2">
+                <.icon name="hero-code-bracket" class="w-5 h-5" />
+                Raw Pod State
+              </h3>
+              <button phx-click="hide_debug_modal" class="btn btn-ghost btn-sm btn-circle">
+                <.icon name="hero-x-mark" class="w-5 h-5" />
+              </button>
+            </div>
+            <div class="flex-1 overflow-auto p-4">
+              <pre class="text-xs font-mono bg-base-200 p-4 rounded whitespace-pre-wrap break-all"><%= inspect(@state, pretty: true, limit: :infinity, printable_limit: :infinity) %></pre>
+            </div>
+          </div>
+        </div>
+      <% end %>
     </div>
     """
   end
 
   # Components
 
+  # Pod status badge (shown next to title)
+  defp pod_status_badge(assigns) do
+    assigns = assign(assigns, :running, Ipa.PodSupervisor.pod_running?(assigns.task_id))
+
+    ~H"""
+    <%= if @running do %>
+      <span class="badge badge-success gap-1">
+        <span class="w-2 h-2 bg-success-content rounded-full animate-pulse"></span> Running
+      </span>
+    <% else %>
+      <span class="badge badge-ghost">Stopped</span>
+    <% end %>
+    """
+  end
+
   # Pod control button (Start/Stop)
   defp pod_control_button(assigns) do
     assigns = assign(assigns, :running, Ipa.PodSupervisor.pod_running?(assigns.task_id))
 
     ~H"""
-    <div class="flex items-center gap-2">
-      <%= if @running do %>
-        <span class="badge badge-success gap-1">
-          <span class="w-2 h-2 bg-success-content rounded-full animate-pulse"></span> Running
-        </span>
-        <button phx-click="stop_pod" class="btn btn-sm btn-outline btn-error">
-          <.icon name="hero-stop" class="w-4 h-4" /> Stop Pod
-        </button>
-      <% else %>
-        <span class="badge badge-ghost">Stopped</span>
-        <button phx-click="start_pod" class="btn btn-sm btn-primary">
-          <.icon name="hero-play" class="w-4 h-4" /> Start Pod
-        </button>
-      <% end %>
-    </div>
+    <%= if @running do %>
+      <button phx-click="stop_pod" class="btn btn-sm btn-outline btn-error gap-1">
+        <.icon name="hero-stop" class="w-4 h-4" /> Stop
+      </button>
+    <% else %>
+      <button phx-click="start_pod" class="btn btn-sm btn-outline btn-success gap-1">
+        <.icon name="hero-play" class="w-4 h-4" /> Start
+      </button>
+    <% end %>
     """
   end
 
@@ -576,42 +621,29 @@ defmodule IpaWeb.Pod.TaskLive do
       |> assign(:current_index, current_index)
 
     ~H"""
-    <div class="flex items-center justify-between">
+    <div class="flex gap-1">
       <%= for {phase, index} <- Enum.with_index(@phases) do %>
-        <div class="flex items-center flex-1">
-          <!-- Phase step -->
-          <div class="flex flex-col items-center">
-            <div class={[
-              "w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium transition-all",
-              cond do
-                index < @current_index -> "bg-success text-success-content"
-                index == @current_index -> "bg-primary text-primary-content ring-4 ring-primary/20"
-                true -> "bg-base-300 text-base-content/40"
-              end
-            ]}>
-              <%= if index < @current_index do %>
-                <.icon name="hero-check" class="w-4 h-4" />
-              <% else %>
-                {index + 1}
-              <% end %>
-            </div>
-            <span class={[
-              "text-xs mt-1 text-center max-w-[80px]",
-              if(index == @current_index,
-                do: "font-semibold text-primary",
-                else: "text-base-content/60"
-              )
-            ]}>
-              {format_phase_short(phase)}
-            </span>
-          </div>
-          <!-- Connector line (except for last item) -->
-          <%= if index < length(@phases) - 1 do %>
-            <div class={[
-              "flex-1 h-1 mx-2 rounded transition-all",
-              if(index < @current_index, do: "bg-success", else: "bg-base-300")
-            ]} />
-          <% end %>
+        <div class="flex-1 flex flex-col gap-1">
+          <!-- Progress segment -->
+          <div class={[
+            "h-2 rounded transition-all",
+            cond do
+              index < @current_index -> "bg-success"
+              index == @current_index -> "bg-primary"
+              true -> "bg-base-300"
+            end
+          ]} />
+          <!-- Label -->
+          <span class={[
+            "text-xs text-center",
+            cond do
+              index < @current_index -> "text-success font-medium"
+              index == @current_index -> "text-primary font-semibold"
+              true -> "text-base-content/50"
+            end
+          ]}>
+            {format_phase_short(phase)}
+          </span>
         </div>
       <% end %>
     </div>
@@ -712,12 +744,64 @@ defmodule IpaWeb.Pod.TaskLive do
     <!-- Plan Section -->
       <.card title="Plan">
         <%= if @state.plan do %>
+          <!-- Display workstreams from planning agent -->
+          <%= if workstreams = @state.plan[:workstreams] || @state.plan["workstreams"] do %>
+            <div class="space-y-4">
+              <h4 class="font-medium text-base-content/80">Workstreams</h4>
+              <div class="space-y-3">
+                <%= for ws <- List.wrap(workstreams) do %>
+                  <div class="bg-base-200 rounded-lg p-4">
+                    <div class="flex items-start justify-between">
+                      <div class="flex-1">
+                        <div class="flex items-center gap-2">
+                          <span class="badge badge-sm badge-outline font-mono">
+                            {ws[:id] || ws["id"]}
+                          </span>
+                          <h5 class="font-semibold">{ws[:title] || ws["title"]}</h5>
+                        </div>
+                        <p class="text-sm text-base-content/70 mt-2">
+                          {ws[:description] || ws["description"]}
+                        </p>
+                        <div class="flex items-center gap-4 mt-3 text-xs text-base-content/60">
+                          <%= if deps = ws[:dependencies] || ws["dependencies"] do %>
+                            <%= if length(deps) > 0 do %>
+                              <span class="flex items-center gap-1">
+                                <.icon name="hero-link" class="w-3 h-3" />
+                                Depends on: {Enum.join(deps, ", ")}
+                              </span>
+                            <% else %>
+                              <span class="flex items-center gap-1 text-success">
+                                <.icon name="hero-check" class="w-3 h-3" />
+                                No dependencies
+                              </span>
+                            <% end %>
+                          <% end %>
+                          <%= if hours = ws[:estimated_hours] || ws["estimated_hours"] do %>
+                            <span class="flex items-center gap-1">
+                              <.icon name="hero-clock" class="w-3 h-3" />
+                              {hours} hour(s)
+                            </span>
+                          <% end %>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                <% end %>
+              </div>
+            </div>
+          <% end %>
+          <!-- Also display steps if present (for backwards compatibility) -->
           <%= if steps = @state.plan[:steps] || @state.plan["steps"] do %>
-            <ol class="list-decimal list-inside space-y-2">
-              <%= for step <- List.wrap(steps) do %>
-                <li class="text-base-content">{format_step(step)}</li>
-              <% end %>
-            </ol>
+            <%= if length(List.wrap(steps)) > 0 do %>
+              <div class="mt-4">
+                <h4 class="font-medium text-base-content/80 mb-2">Steps</h4>
+                <ol class="list-decimal list-inside space-y-2">
+                  <%= for step <- List.wrap(steps) do %>
+                    <li class="text-base-content">{format_step(step)}</li>
+                  <% end %>
+                </ol>
+              </div>
+            <% end %>
           <% end %>
           <%= if !(@state.plan[:approved?] || @state.plan["approved?"]) do %>
             <div class="mt-4">
@@ -918,12 +1002,12 @@ defmodule IpaWeb.Pod.TaskLive do
           </div>
         <% else %>
           <!-- Try to construct workspace path from task_id and agent_id -->
-          <%= if @agent && @agent.workspace do %>
+          <%= if @agent && @agent.workspace_path do %>
             <div class="mb-4">
               <h3 class="font-medium text-sm mb-2 flex items-center gap-2">
                 <.icon name="hero-folder" class="w-4 h-4" /> Workspace
               </h3>
-              <.copyable_path path={@agent.workspace} label="Workspace Path" />
+              <.copyable_path path={@agent.workspace_path} label="Workspace Path" />
             </div>
           <% else %>
             <div class="mb-4">

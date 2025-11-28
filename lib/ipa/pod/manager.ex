@@ -350,10 +350,27 @@ defmodule Ipa.Pod.Manager do
     ws = State.get_workstream(state, workstream_id)
 
     if ws do
+      # Build complete workstream context for the agent
+      # Convert struct to map and include all relevant data
+      workstream_map = %{
+        workstream_id: ws.workstream_id,
+        title: ws.title,
+        spec: ws.spec,
+        dependencies: ws.dependencies
+      }
+
+      # Include task context as well
+      task_map = %{
+        task_id: state.task_id,
+        title: state.title,
+        spec: state.spec
+      }
+
       context = %{
         task_id: state.task_id,
         workstream_id: workstream_id,
-        workstream_spec: ws.spec
+        workstream: workstream_map,
+        task: task_map
       }
 
       # Try to start the agent
@@ -488,16 +505,23 @@ defmodule Ipa.Pod.Manager do
   end
 
   defp start_agent_for_workstream(state, context) do
+    # Create workspace for the workstream agent
+    workspace_path = create_workstream_workspace(state.task_id, context.workstream_id)
+
+    # Add workspace to context for the agent
+    context_with_workspace = Map.put(context, :workspace, workspace_path)
+
     case Ipa.Agent.Supervisor.start_agent(
            state.task_id,
            Ipa.Agent.Types.Workstream,
-           context
+           context_with_workspace
          ) do
       {:ok, agent_id} ->
         case AgentCommands.start_agent(state, %{
                agent_id: agent_id,
                agent_type: :workstream,
-               workstream_id: context.workstream_id
+               workstream_id: context.workstream_id,
+               workspace_path: workspace_path
              }) do
           {:ok, events} ->
             case persist_and_apply_events(state, events) do
@@ -511,6 +535,21 @@ defmodule Ipa.Pod.Manager do
 
       error ->
         error
+    end
+  end
+
+  defp create_workstream_workspace(task_id, workstream_id) do
+    # Use a temporary directory for workstream agent workspace
+    base_path = Application.get_env(:ipa, :workspace_base_path, "/tmp/ipa/workspaces")
+    workspace_path = Path.join([base_path, task_id, "workstreams", workstream_id])
+
+    case File.mkdir_p(workspace_path) do
+      :ok ->
+        Logger.debug("Created workstream workspace", path: workspace_path, workstream_id: workstream_id)
+        workspace_path
+
+      {:error, reason} ->
+        raise "Failed to create workstream workspace at #{workspace_path}: #{inspect(reason)}"
     end
   end
 
