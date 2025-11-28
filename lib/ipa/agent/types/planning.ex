@@ -42,6 +42,7 @@ defmodule Ipa.Agent.Types.Planning do
   @impl true
   def generate_prompt(context) do
     task = context[:task] || %{}
+    workspace_path = context[:workspace]
 
     # Handle both struct and map access for task
     spec = get_field(task, :spec) || %{}
@@ -54,6 +55,9 @@ defmodule Ipa.Agent.Types.Planning do
       end
 
     task_title = get_field(task, :title) || task["title"] || "Untitled Task"
+
+    # Note: Workspace rules are now included via CLAUDE.md generation through ContentBlock.
+    # The agent's working directory is set via the cwd option in configure_options/1.
 
     """
     Task: #{task_title}

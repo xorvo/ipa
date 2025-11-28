@@ -1,479 +1,359 @@
 defmodule Ipa.Pod.WorkspaceManagerTest do
-  use Ipa.DataCase, async: false
+  use ExUnit.Case, async: true
 
   alias Ipa.Pod.WorkspaceManager
-  alias Ipa.EventStore
 
-  describe "path validation (unit tests - no aw CLI required)" do
-    setup do
-      # These tests use internal validation functions via file operations
-      task_id = "task-#{UUID.uuid4()}"
-      agent_id = "agent-#{UUID.uuid4()}"
+  @moduletag :tmp_dir
 
-      # Create task stream
-      {:ok, ^task_id} = EventStore.start_stream("task", task_id)
-
-      # Create a temporary workspace directory manually for testing
-      workspace_path =
-        Path.join(System.tmp_dir!(), "ipa_test_#{System.unique_integer([:positive])}")
-
-      File.mkdir_p!(workspace_path)
-
-      # Add workspace_created event to simulate existing workspace
-      {:ok, _} =
-        EventStore.append(
-          task_id,
-          "workspace_created",
-          %{
-            agent_id: agent_id,
-            workspace_path: workspace_path,
-            config: %{}
-          },
-          actor_id: "system"
-        )
-
-      {:ok, pid} = WorkspaceManager.start_link(task_id: task_id)
-
-      on_exit(fn ->
-        if Process.alive?(pid), do: GenServer.stop(pid)
-        File.rm_rf!(workspace_path)
-      end)
-
-      %{task_id: task_id, agent_id: agent_id, workspace_path: workspace_path, pid: pid}
+  describe "path helpers" do
+    test "task_workspace_path/1 returns correct path" do
+      task_id = "task-123"
+      base = WorkspaceManager.base_path()
+      assert WorkspaceManager.task_workspace_path(task_id) == Path.join(base, task_id)
     end
 
-    test "rejects path traversal with ..", %{task_id: task_id, agent_id: agent_id} do
-      assert {:error, :path_traversal_attempt} =
-               WorkspaceManager.read_file(task_id, agent_id, "../../../etc/passwd")
+    test "sub_workspaces_dir/1 returns correct path" do
+      task_id = "task-123"
+      expected = Path.join([WorkspaceManager.base_path(), task_id, "sub-workspaces"])
+      assert WorkspaceManager.sub_workspaces_dir(task_id) == expected
     end
 
-    test "rejects absolute paths", %{task_id: task_id, agent_id: agent_id} do
-      assert {:error, :absolute_path_not_allowed} =
-               WorkspaceManager.read_file(task_id, agent_id, "/etc/passwd")
-    end
-
-    test "rejects paths with null bytes", %{task_id: task_id, agent_id: agent_id} do
-      assert {:error, :invalid_path_null_byte} =
-               WorkspaceManager.read_file(task_id, agent_id, "file\0.txt")
-    end
-
-    test "rejects paths exceeding max length", %{task_id: task_id, agent_id: agent_id} do
-      long_path = String.duplicate("a", 5000)
-
-      assert {:error, :path_too_long} =
-               WorkspaceManager.read_file(task_id, agent_id, long_path)
-    end
-
-    test "allows valid relative paths", %{
-      task_id: task_id,
-      agent_id: agent_id,
-      workspace_path: workspace_path
-    } do
-      # Create a test file
-      test_file = Path.join(workspace_path, "test.txt")
-      File.write!(test_file, "test content")
-
-      assert {:ok, "test content"} = WorkspaceManager.read_file(task_id, agent_id, "test.txt")
-    end
-
-    test "allows paths in subdirectories", %{
-      task_id: task_id,
-      agent_id: agent_id,
-      workspace_path: workspace_path
-    } do
-      # Create subdirectory and file
-      subdir = Path.join(workspace_path, "work")
-      File.mkdir_p!(subdir)
-      test_file = Path.join(subdir, "output.txt")
-      File.write!(test_file, "output content")
-
-      assert {:ok, "output content"} =
-               WorkspaceManager.read_file(task_id, agent_id, "work/output.txt")
+    test "sub_workspace_path/2 returns correct path" do
+      task_id = "task-123"
+      workspace_name = "planning-abc123"
+      expected = Path.join([WorkspaceManager.base_path(), task_id, "sub-workspaces", workspace_name])
+      assert WorkspaceManager.sub_workspace_path(task_id, workspace_name) == expected
     end
   end
 
-  describe "file operations (unit tests - no aw CLI required)" do
-    setup do
-      task_id = "task-#{UUID.uuid4()}"
-      agent_id = "agent-#{UUID.uuid4()}"
-
-      # Create task stream
-      {:ok, ^task_id} = EventStore.start_stream("task", task_id)
-
-      # Create a temporary workspace directory manually
-      workspace_path =
-        Path.join(System.tmp_dir!(), "ipa_test_#{System.unique_integer([:positive])}")
-
-      File.mkdir_p!(workspace_path)
-
-      # Add workspace_created event
-      {:ok, _} =
-        EventStore.append(
-          task_id,
-          "workspace_created",
-          %{
-            agent_id: agent_id,
-            workspace_path: workspace_path,
-            config: %{}
-          },
-          actor_id: "system"
-        )
-
-      {:ok, pid} = WorkspaceManager.start_link(task_id: task_id)
-
-      on_exit(fn ->
-        if Process.alive?(pid), do: GenServer.stop(pid)
-        File.rm_rf!(workspace_path)
-      end)
-
-      %{task_id: task_id, agent_id: agent_id, workspace_path: workspace_path, pid: pid}
+  describe "generate_workspace_name/2" do
+    test "generates name with prefix and short suffix" do
+      name = WorkspaceManager.generate_workspace_name("planning", "task-abc-123-def")
+      # The suffix is extracted from the unique_suffix (first 8 chars after removing dashes)
+      assert String.starts_with?(name, "planning-")
+      assert String.length(name) > String.length("planning-")
     end
 
-    test "read_file/3 reads file content", %{
-      task_id: task_id,
-      agent_id: agent_id,
-      workspace_path: workspace_path
-    } do
-      test_file = Path.join(workspace_path, "data.txt")
-      File.write!(test_file, "file content")
-
-      assert {:ok, "file content"} = WorkspaceManager.read_file(task_id, agent_id, "data.txt")
+    test "sanitizes prefix with special characters" do
+      name = WorkspaceManager.generate_workspace_name("Setup Database!", "ws-123")
+      # Prefix is sanitized (lowercase, dashes for special chars)
+      assert String.starts_with?(name, "setup-database-")
     end
 
-    test "read_file/3 returns error for non-existent file", %{
-      task_id: task_id,
-      agent_id: agent_id
-    } do
-      assert {:error, :file_not_found} =
-               WorkspaceManager.read_file(task_id, agent_id, "nonexistent.txt")
+    test "generates ws- prefix when nil" do
+      name = WorkspaceManager.generate_workspace_name(nil, "random-id-123")
+      assert String.starts_with?(name, "ws-")
     end
 
-    test "write_file/4 writes file content", %{task_id: task_id, agent_id: agent_id} do
-      assert :ok =
-               WorkspaceManager.write_file(task_id, agent_id, "output.txt", "new content")
-
-      assert {:ok, "new content"} = WorkspaceManager.read_file(task_id, agent_id, "output.txt")
-    end
-
-    test "write_file/4 creates parent directories", %{task_id: task_id, agent_id: agent_id} do
-      assert :ok =
-               WorkspaceManager.write_file(
-                 task_id,
-                 agent_id,
-                 "nested/dir/file.txt",
-                 "nested content"
-               )
-
-      assert {:ok, "nested content"} =
-               WorkspaceManager.read_file(task_id, agent_id, "nested/dir/file.txt")
-    end
-
-    test "list_files/2 returns file tree", %{
-      task_id: task_id,
-      agent_id: agent_id,
-      workspace_path: workspace_path
-    } do
-      # Create test file structure
-      File.write!(Path.join(workspace_path, "root.txt"), "root")
-      File.mkdir_p!(Path.join(workspace_path, "dir1"))
-      File.write!(Path.join(workspace_path, "dir1/file1.txt"), "file1")
-      File.mkdir_p!(Path.join(workspace_path, "dir2/subdir"))
-      File.write!(Path.join(workspace_path, "dir2/subdir/file2.txt"), "file2")
-
-      assert {:ok, tree} = WorkspaceManager.list_files(task_id, agent_id)
-
-      assert tree["root.txt"] == :file
-      assert is_map(tree["dir1"])
-      assert tree["dir1"]["file1.txt"] == :file
-      assert is_map(tree["dir2"])
-      assert is_map(tree["dir2"]["subdir"])
-      assert tree["dir2"]["subdir"]["file2.txt"] == :file
-    end
-
-    test "get_workspace_path/2 returns workspace path", %{
-      task_id: task_id,
-      agent_id: agent_id,
-      workspace_path: workspace_path
-    } do
-      assert {:ok, ^workspace_path} = WorkspaceManager.get_workspace_path(task_id, agent_id)
-    end
-
-    test "get_workspace_path/2 returns error for non-existent workspace", %{task_id: task_id} do
-      non_existent_agent = "agent-nonexistent"
-
-      assert {:error, :workspace_not_found} =
-               WorkspaceManager.get_workspace_path(task_id, non_existent_agent)
-    end
-
-    test "workspace_exists?/2 returns true when workspace exists", %{
-      task_id: task_id,
-      agent_id: agent_id
-    } do
-      assert WorkspaceManager.workspace_exists?(task_id, agent_id)
-    end
-
-    test "workspace_exists?/2 returns false when workspace doesn't exist", %{task_id: task_id} do
-      non_existent_agent = "agent-nonexistent"
-
-      refute WorkspaceManager.workspace_exists?(task_id, non_existent_agent)
+    test "truncates long prefixes" do
+      long_prefix = String.duplicate("a", 100)
+      name = WorkspaceManager.generate_workspace_name(long_prefix, "id-123")
+      # Prefix should be truncated to 50 chars + "-" + 8 char suffix
+      assert String.length(name) <= 60
     end
   end
 
-  describe "event sourcing (unit tests)" do
-    test "rebuilds state from workspace events on initialization" do
-      task_id = "task-#{UUID.uuid4()}"
-      agent_id = "agent-#{UUID.uuid4()}"
-
-      # Create task stream and add workspace_created event
-      {:ok, ^task_id} = EventStore.start_stream("task", task_id)
-
-      {:ok, _} =
-        EventStore.append(
-          task_id,
-          "workspace_created",
-          %{
-            agent_id: agent_id,
-            workspace_path: "/ipa/workspaces/#{task_id}/#{agent_id}",
-            config: %{max_size_mb: 500}
-          },
-          actor_id: "system"
-        )
-
-      {:ok, pid} = WorkspaceManager.start_link(task_id: task_id)
-
-      # Verify workspace is in state
-      assert {:ok, _path} = WorkspaceManager.get_workspace_path(task_id, agent_id)
-
-      GenServer.stop(pid)
+  describe "sanitize_name/1" do
+    test "converts to lowercase" do
+      assert WorkspaceManager.sanitize_name("HELLO") == "hello"
     end
 
-    test "applies workspace_created and workspace_cleanup events correctly" do
-      task_id = "task-#{UUID.uuid4()}"
-      agent_id_1 = "agent-1"
-      agent_id_2 = "agent-2"
+    test "replaces special characters with dashes" do
+      assert WorkspaceManager.sanitize_name("hello world!") == "hello-world"
+    end
 
-      # Create task stream
-      {:ok, ^task_id} = EventStore.start_stream("task", task_id)
+    test "removes leading and trailing dashes" do
+      assert WorkspaceManager.sanitize_name("--hello--") == "hello"
+    end
 
-      # Add workspace_created events
-      {:ok, _} =
-        EventStore.append(
-          task_id,
-          "workspace_created",
-          %{
-            agent_id: agent_id_1,
-            workspace_path: "/ipa/workspaces/#{task_id}/#{agent_id_1}",
-            config: %{}
-          },
-          actor_id: "system"
-        )
-
-      {:ok, _} =
-        EventStore.append(
-          task_id,
-          "workspace_created",
-          %{
-            agent_id: agent_id_2,
-            workspace_path: "/ipa/workspaces/#{task_id}/#{agent_id_2}",
-            config: %{}
-          },
-          actor_id: "system"
-        )
-
-      # Add workspace_cleanup event for agent_id_1
-      {:ok, _} =
-        EventStore.append(
-          task_id,
-          "workspace_cleanup",
-          %{
-            agent_id: agent_id_1,
-            workspace_path: "/ipa/workspaces/#{task_id}/#{agent_id_1}",
-            cleanup_reason: "test"
-          },
-          actor_id: "system"
-        )
-
-      {:ok, pid} = WorkspaceManager.start_link(task_id: task_id)
-
-      # agent_id_1 should not exist (cleaned up)
-      assert {:error, :workspace_not_found} =
-               WorkspaceManager.get_workspace_path(task_id, agent_id_1)
-
-      # agent_id_2 should exist
-      assert {:ok, _path} = WorkspaceManager.get_workspace_path(task_id, agent_id_2)
-
-      GenServer.stop(pid)
+    test "truncates to 50 characters" do
+      long_name = String.duplicate("a", 100)
+      assert String.length(WorkspaceManager.sanitize_name(long_name)) == 50
     end
   end
 
-  describe "create_workspace/3 (integration tests)" do
-    setup do
-      task_id = "task-#{UUID.uuid4()}"
-      agent_id = "agent-#{UUID.uuid4()}"
-
-      # Use a temporary directory for workspace base path
-      temp_base =
-        Path.join(System.tmp_dir!(), "ipa_ws_create_#{System.unique_integer([:positive])}")
-
-      File.mkdir_p!(temp_base)
-
-      # Configure the temp base path for this test
-      original_config = Application.get_env(:ipa, WorkspaceManager, [])
-
-      Application.put_env(
-        :ipa,
-        WorkspaceManager,
-        Keyword.put(original_config, :base_path, temp_base)
-      )
-
-      # Create task stream
-      {:ok, ^task_id} = EventStore.start_stream("task", task_id)
-
-      {:ok, pid} = WorkspaceManager.start_link(task_id: task_id)
+  describe "base workspace operations" do
+    setup %{tmp_dir: tmp_dir} do
+      # Override the base path for testing
+      original_config = Application.get_env(:ipa, :workspace_base_path)
+      Application.put_env(:ipa, :workspace_base_path, tmp_dir)
 
       on_exit(fn ->
-        # Cleanup: try to destroy workspace if it was created
-        try do
-          WorkspaceManager.cleanup_workspace(task_id, agent_id)
-        catch
-          _, _ -> :ok
+        if original_config do
+          Application.put_env(:ipa, :workspace_base_path, original_config)
+        else
+          Application.delete_env(:ipa, :workspace_base_path)
         end
-
-        if Process.alive?(pid), do: GenServer.stop(pid)
-        # Restore original config
-        Application.put_env(:ipa, WorkspaceManager, original_config)
-        # Cleanup temp directory
-        File.rm_rf(temp_base)
       end)
 
-      %{task_id: task_id, agent_id: agent_id, pid: pid}
+      task_id = "task-#{:rand.uniform(100_000)}"
+      %{task_id: task_id, tmp_dir: tmp_dir}
     end
 
-    test "creates workspace with directory structure", %{task_id: task_id, agent_id: agent_id} do
-      assert {:ok, workspace_path} =
-               WorkspaceManager.create_workspace(task_id, agent_id, %{})
+    test "create_base_workspace/2 creates directory structure", %{task_id: task_id, tmp_dir: _tmp_dir} do
+      assert {:ok, workspace_path} = WorkspaceManager.create_base_workspace(task_id)
 
-      assert String.contains?(workspace_path, task_id)
-      assert String.contains?(workspace_path, agent_id)
-
-      # Verify workspace path exists
       assert File.exists?(workspace_path)
-
-      # Verify directory structure
       assert File.dir?(Path.join(workspace_path, ".ipa"))
+      assert File.dir?(Path.join(workspace_path, "sub-workspaces"))
       assert File.dir?(Path.join(workspace_path, "work"))
       assert File.dir?(Path.join(workspace_path, "output"))
-
-      # Verify metadata files
       assert File.exists?(Path.join([workspace_path, ".ipa", "task_spec.json"]))
       assert File.exists?(Path.join([workspace_path, ".ipa", "workspace_config.json"]))
-      assert File.exists?(Path.join([workspace_path, ".ipa", "context.json"]))
+      assert File.exists?(Path.join(workspace_path, "CLAUDE.md"))
+      assert File.exists?(Path.join(workspace_path, "AGENT.md"))
+
+      # CLAUDE.md and AGENT.md should have identical content
+      claude_content = File.read!(Path.join(workspace_path, "CLAUDE.md"))
+      agent_content = File.read!(Path.join(workspace_path, "AGENT.md"))
+      assert claude_content == agent_content
     end
 
-    test "injects CLAUDE.md when provided", %{task_id: task_id, agent_id: agent_id} do
-      claude_md = "# Task Context\n\nThis is test CLAUDE.md content"
-
-      assert {:ok, workspace_path} =
-               WorkspaceManager.create_workspace(task_id, agent_id, %{claude_md: claude_md})
-
-      # Verify CLAUDE.md was written
-      claude_md_path = Path.join(workspace_path, "CLAUDE.md")
-      assert File.exists?(claude_md_path)
-      assert File.read!(claude_md_path) == claude_md
+    test "create_base_workspace/2 returns error if already exists", %{task_id: task_id} do
+      {:ok, _} = WorkspaceManager.create_base_workspace(task_id)
+      assert {:error, :already_exists} = WorkspaceManager.create_base_workspace(task_id)
     end
 
-    test "returns error when workspace already exists", %{task_id: task_id, agent_id: agent_id} do
-      assert {:ok, _workspace_path} =
-               WorkspaceManager.create_workspace(task_id, agent_id, %{})
-
-      # Second creation should fail
-      assert {:error, :workspace_exists} =
-               WorkspaceManager.create_workspace(task_id, agent_id, %{})
+    test "ensure_base_workspace/2 creates workspace if not exists", %{task_id: task_id} do
+      assert {:ok, path} = WorkspaceManager.ensure_base_workspace(task_id)
+      assert File.exists?(path)
     end
 
-    test "appends workspace_created event", %{task_id: task_id, agent_id: agent_id} do
-      assert {:ok, workspace_path} =
-               WorkspaceManager.create_workspace(task_id, agent_id, %{})
-
-      # Verify event was appended
-      {:ok, events} = EventStore.read_stream(task_id, event_types: ["workspace_created"])
-      assert length(events) == 1
-
-      event = List.first(events)
-      assert event.event_type == "workspace_created"
-      assert event.data[:agent_id] == agent_id
-      assert event.data[:workspace_path] == workspace_path
-    end
-  end
-
-  describe "cleanup_workspace/2 (integration tests)" do
-    setup do
-      task_id = "task-#{UUID.uuid4()}"
-      agent_id = "agent-#{UUID.uuid4()}"
-
-      # Use a temporary directory for workspace base path
-      temp_base =
-        Path.join(System.tmp_dir!(), "ipa_ws_test_#{System.unique_integer([:positive])}")
-
-      File.mkdir_p!(temp_base)
-
-      # Configure the temp base path for this test
-      original_config = Application.get_env(:ipa, WorkspaceManager, [])
-
-      Application.put_env(
-        :ipa,
-        WorkspaceManager,
-        Keyword.put(original_config, :base_path, temp_base)
-      )
-
-      # Create task stream
-      {:ok, ^task_id} = EventStore.start_stream("task", task_id)
-
-      {:ok, pid} = WorkspaceManager.start_link(task_id: task_id)
-
-      # Create workspace
-      {:ok, workspace_path} = WorkspaceManager.create_workspace(task_id, agent_id, %{})
-
-      on_exit(fn ->
-        if Process.alive?(pid), do: GenServer.stop(pid)
-        # Restore original config
-        Application.put_env(:ipa, WorkspaceManager, original_config)
-        # Cleanup temp directory
-        File.rm_rf(temp_base)
-      end)
-
-      %{task_id: task_id, agent_id: agent_id, workspace_path: workspace_path, pid: pid}
+    test "ensure_base_workspace/2 returns existing path if exists", %{task_id: task_id} do
+      {:ok, path1} = WorkspaceManager.create_base_workspace(task_id)
+      {:ok, path2} = WorkspaceManager.ensure_base_workspace(task_id)
+      assert path1 == path2
     end
 
-    test "destroys workspace directory", %{
-      task_id: task_id,
-      agent_id: agent_id,
-      workspace_path: workspace_path
-    } do
-      assert :ok = WorkspaceManager.cleanup_workspace(task_id, agent_id)
+    test "cleanup_base_workspace/1 removes workspace", %{task_id: task_id} do
+      {:ok, workspace_path} = WorkspaceManager.create_base_workspace(task_id)
+      assert File.exists?(workspace_path)
 
-      # Verify workspace no longer exists
+      assert :ok = WorkspaceManager.cleanup_base_workspace(task_id)
       refute File.exists?(workspace_path)
     end
 
-    test "appends workspace_cleanup event", %{task_id: task_id, agent_id: agent_id} do
-      assert :ok = WorkspaceManager.cleanup_workspace(task_id, agent_id)
-
-      # Verify event was appended
-      {:ok, events} = EventStore.read_stream(task_id, event_types: ["workspace_cleanup"])
-      assert length(events) == 1
-
-      event = List.first(events)
-      assert event.event_type == "workspace_cleanup"
-      assert event.data[:agent_id] == agent_id
+    test "cleanup_base_workspace/1 returns ok for non-existent workspace", %{task_id: task_id} do
+      assert :ok = WorkspaceManager.cleanup_base_workspace(task_id)
     end
 
-    test "removes workspace from state after cleanup", %{task_id: task_id, agent_id: agent_id} do
-      assert :ok = WorkspaceManager.cleanup_workspace(task_id, agent_id)
+    test "base_workspace_exists?/1 returns correct status", %{task_id: task_id} do
+      refute WorkspaceManager.base_workspace_exists?(task_id)
+      {:ok, _} = WorkspaceManager.create_base_workspace(task_id)
+      assert WorkspaceManager.base_workspace_exists?(task_id)
+    end
+  end
 
-      # Verify workspace no longer exists in state
-      assert {:error, :workspace_not_found} =
-               WorkspaceManager.get_workspace_path(task_id, agent_id)
+  describe "sub-workspace operations" do
+    setup %{tmp_dir: tmp_dir} do
+      original_config = Application.get_env(:ipa, :workspace_base_path)
+      Application.put_env(:ipa, :workspace_base_path, tmp_dir)
+
+      on_exit(fn ->
+        if original_config do
+          Application.put_env(:ipa, :workspace_base_path, original_config)
+        else
+          Application.delete_env(:ipa, :workspace_base_path)
+        end
+      end)
+
+      task_id = "task-#{:rand.uniform(100_000)}"
+      # Create base workspace first
+      {:ok, _} = WorkspaceManager.create_base_workspace(task_id)
+
+      %{task_id: task_id, tmp_dir: tmp_dir}
+    end
+
+    test "create_sub_workspace/3 creates directory structure", %{task_id: task_id} do
+      workspace_name = "planning-abc123"
+      assert {:ok, workspace_path} = WorkspaceManager.create_sub_workspace(task_id, workspace_name)
+
+      assert File.exists?(workspace_path)
+      assert File.dir?(Path.join(workspace_path, ".ipa"))
+      assert File.dir?(Path.join(workspace_path, "work"))
+      assert File.dir?(Path.join(workspace_path, "output"))
+      assert File.exists?(Path.join([workspace_path, ".ipa", "workspace_config.json"]))
+      assert File.exists?(Path.join(workspace_path, "CLAUDE.md"))
+      assert File.exists?(Path.join(workspace_path, "AGENT.md"))
+    end
+
+    test "create_sub_workspace/3 stores workstream_id in config", %{task_id: task_id} do
+      workspace_name = "ws-abc123"
+      workstream_id = "workstream-456"
+      {:ok, workspace_path} = WorkspaceManager.create_sub_workspace(task_id, workspace_name, %{
+        workstream_id: workstream_id,
+        purpose: :workstream
+      })
+
+      config_path = Path.join([workspace_path, ".ipa", "workspace_config.json"])
+      config = config_path |> File.read!() |> Jason.decode!()
+
+      assert config["workstream_id"] == workstream_id
+      assert config["purpose"] == "workstream"
+    end
+
+    test "create_sub_workspace/3 returns error if base workspace doesn't exist" do
+      non_existent_task = "task-nonexistent-#{:rand.uniform(100_000)}"
+      assert {:error, :base_workspace_not_exists} =
+        WorkspaceManager.create_sub_workspace(non_existent_task, "planning-123")
+    end
+
+    test "create_sub_workspace/3 returns error if already exists", %{task_id: task_id} do
+      workspace_name = "planning-abc123"
+      {:ok, _} = WorkspaceManager.create_sub_workspace(task_id, workspace_name)
+      assert {:error, :already_exists} = WorkspaceManager.create_sub_workspace(task_id, workspace_name)
+    end
+
+    test "cleanup_sub_workspace/2 removes workspace", %{task_id: task_id} do
+      workspace_name = "planning-abc123"
+      {:ok, workspace_path} = WorkspaceManager.create_sub_workspace(task_id, workspace_name)
+      assert File.exists?(workspace_path)
+
+      assert :ok = WorkspaceManager.cleanup_sub_workspace(task_id, workspace_name)
+      refute File.exists?(workspace_path)
+    end
+
+    test "cleanup_sub_workspace/2 returns error for non-existent workspace", %{task_id: task_id} do
+      assert {:error, :not_found} =
+        WorkspaceManager.cleanup_sub_workspace(task_id, "nonexistent-ws")
+    end
+
+    test "list_sub_workspaces/1 returns all sub-workspaces", %{task_id: task_id} do
+      {:ok, _} = WorkspaceManager.create_sub_workspace(task_id, "planning-abc")
+      {:ok, _} = WorkspaceManager.create_sub_workspace(task_id, "ws-def")
+      {:ok, _} = WorkspaceManager.create_sub_workspace(task_id, "ws-ghi")
+
+      {:ok, workspaces} = WorkspaceManager.list_sub_workspaces(task_id)
+      assert length(workspaces) == 3
+      assert "planning-abc" in workspaces
+      assert "ws-def" in workspaces
+      assert "ws-ghi" in workspaces
+    end
+
+    test "list_sub_workspaces/1 returns empty list when none exist", %{task_id: task_id} do
+      {:ok, workspaces} = WorkspaceManager.list_sub_workspaces(task_id)
+      assert workspaces == []
+    end
+
+    test "sub_workspace_exists?/2 returns correct status", %{task_id: task_id} do
+      workspace_name = "planning-abc"
+      refute WorkspaceManager.sub_workspace_exists?(task_id, workspace_name)
+      {:ok, _} = WorkspaceManager.create_sub_workspace(task_id, workspace_name)
+      assert WorkspaceManager.sub_workspace_exists?(task_id, workspace_name)
+    end
+
+    test "get_sub_workspace_path/2 returns path if exists", %{task_id: task_id} do
+      workspace_name = "planning-abc"
+      {:ok, created_path} = WorkspaceManager.create_sub_workspace(task_id, workspace_name)
+      {:ok, retrieved_path} = WorkspaceManager.get_sub_workspace_path(task_id, workspace_name)
+      assert created_path == retrieved_path
+    end
+
+    test "get_sub_workspace_path/2 returns error if not exists", %{task_id: task_id} do
+      assert {:error, :not_found} = WorkspaceManager.get_sub_workspace_path(task_id, "nonexistent")
+    end
+  end
+
+  describe "file operations" do
+    setup %{tmp_dir: tmp_dir} do
+      original_config = Application.get_env(:ipa, :workspace_base_path)
+      Application.put_env(:ipa, :workspace_base_path, tmp_dir)
+
+      on_exit(fn ->
+        if original_config do
+          Application.put_env(:ipa, :workspace_base_path, original_config)
+        else
+          Application.delete_env(:ipa, :workspace_base_path)
+        end
+      end)
+
+      task_id = "task-#{:rand.uniform(100_000)}"
+      workspace_name = "ws-test"
+
+      {:ok, _} = WorkspaceManager.create_base_workspace(task_id)
+      {:ok, _} = WorkspaceManager.create_sub_workspace(task_id, workspace_name)
+
+      %{task_id: task_id, workspace_name: workspace_name}
+    end
+
+    test "read_file/3 reads file content", %{task_id: task_id, workspace_name: ws_name} do
+      # Write a file to read
+      :ok = WorkspaceManager.write_file(task_id, ws_name, "test.txt", "hello world")
+      assert {:ok, "hello world"} = WorkspaceManager.read_file(task_id, ws_name, "test.txt")
+    end
+
+    test "read_file/3 returns error for non-existent file", %{task_id: task_id, workspace_name: ws_name} do
+      assert {:error, :file_not_found} = WorkspaceManager.read_file(task_id, ws_name, "nonexistent.txt")
+    end
+
+    test "write_file/4 writes file content", %{task_id: task_id, workspace_name: ws_name} do
+      assert :ok = WorkspaceManager.write_file(task_id, ws_name, "output.txt", "content")
+      assert {:ok, "content"} = WorkspaceManager.read_file(task_id, ws_name, "output.txt")
+    end
+
+    test "write_file/4 creates parent directories", %{task_id: task_id, workspace_name: ws_name} do
+      assert :ok = WorkspaceManager.write_file(task_id, ws_name, "nested/dir/file.txt", "nested content")
+      assert {:ok, "nested content"} = WorkspaceManager.read_file(task_id, ws_name, "nested/dir/file.txt")
+    end
+
+    test "list_files/2 returns file tree", %{task_id: task_id, workspace_name: ws_name} do
+      # Create test file structure
+      :ok = WorkspaceManager.write_file(task_id, ws_name, "root.txt", "root")
+      :ok = WorkspaceManager.write_file(task_id, ws_name, "work/file1.txt", "file1")
+      :ok = WorkspaceManager.write_file(task_id, ws_name, "output/subdir/file2.txt", "file2")
+
+      {:ok, tree} = WorkspaceManager.list_files(task_id, ws_name)
+
+      assert tree["root.txt"] == :file
+      assert is_map(tree["work"])
+      assert tree["work"]["file1.txt"] == :file
+      assert is_map(tree["output"])
+      assert is_map(tree["output"]["subdir"])
+      assert tree["output"]["subdir"]["file2.txt"] == :file
+    end
+  end
+
+  describe "path validation" do
+    setup %{tmp_dir: tmp_dir} do
+      original_config = Application.get_env(:ipa, :workspace_base_path)
+      Application.put_env(:ipa, :workspace_base_path, tmp_dir)
+
+      on_exit(fn ->
+        if original_config do
+          Application.put_env(:ipa, :workspace_base_path, original_config)
+        else
+          Application.delete_env(:ipa, :workspace_base_path)
+        end
+      end)
+
+      task_id = "task-#{:rand.uniform(100_000)}"
+      workspace_name = "ws-test"
+
+      {:ok, _} = WorkspaceManager.create_base_workspace(task_id)
+      {:ok, _} = WorkspaceManager.create_sub_workspace(task_id, workspace_name)
+
+      %{task_id: task_id, workspace_name: workspace_name}
+    end
+
+    test "rejects path traversal with ..", %{task_id: task_id, workspace_name: ws_name} do
+      assert {:error, :path_traversal_attempt} =
+        WorkspaceManager.read_file(task_id, ws_name, "../../../etc/passwd")
+    end
+
+    test "rejects absolute paths", %{task_id: task_id, workspace_name: ws_name} do
+      assert {:error, :absolute_path_not_allowed} =
+        WorkspaceManager.read_file(task_id, ws_name, "/etc/passwd")
+    end
+
+    test "rejects paths with null bytes", %{task_id: task_id, workspace_name: ws_name} do
+      assert {:error, :invalid_path_null_byte} =
+        WorkspaceManager.read_file(task_id, ws_name, "file\0.txt")
+    end
+
+    test "rejects paths exceeding max length", %{task_id: task_id, workspace_name: ws_name} do
+      long_path = String.duplicate("a", 5000)
+      assert {:error, :path_too_long} =
+        WorkspaceManager.read_file(task_id, ws_name, long_path)
     end
   end
 end

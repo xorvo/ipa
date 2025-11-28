@@ -583,6 +583,10 @@ defmodule Ipa.Agent.Instance do
         %{state | current_turn_text: new_turn_text}
 
       {:tool_use_start, tool_name, args} ->
+        # IMPORTANT: Flush any accumulated text BEFORE recording the tool call
+        # This ensures text appears in the correct position relative to tool calls
+        state = flush_accumulated_text(state)
+
         call_id = generate_tool_call_id()
 
         # Add tool_call entry to conversation history
@@ -630,11 +634,62 @@ defmodule Ipa.Agent.Instance do
 
         %{state | conversation_history: state.conversation_history ++ [tool_result_entry]}
 
-      {:message_stop, _} ->
+      {:message_start, _data} ->
+        # Message starting - no action needed, just acknowledge
         state
 
-      _ ->
+      {:message_stop, _data} ->
+        # Message complete - text will be flushed at turn end
         state
+
+      {:thinking, _thinking} ->
+        # Extended thinking content - could be logged or displayed separately
+        # For now, we ignore it as it's internal reasoning
+        state
+
+      {:result, result} ->
+        # Final result message - treat as text if non-empty
+        if result != "" do
+          new_turn_text = state.current_turn_text <> result
+          broadcast_stream(state, :text_delta, %{text: result})
+          broadcast_state_update(state)
+          %{state | current_turn_text: new_turn_text}
+        else
+          state
+        end
+
+      {:error, error} ->
+        # Error from the SDK - log and potentially fail the agent
+        Logger.error("Stream error for agent #{state.agent_id}: #{inspect(error)}")
+        %{state | error: "Stream error: #{error}"}
+
+      :unknown ->
+        # Explicitly unknown/empty message - log at debug level and continue
+        Logger.debug("Ignoring unknown/empty stream message for agent #{state.agent_id}")
+        state
+
+      other ->
+        # Unexpected classification - crash to surface the issue
+        raise "Unexpected stream message classification for agent #{state.agent_id}: #{inspect(other)}"
+    end
+  end
+
+  # Flush any accumulated text to conversation history as an assistant entry
+  defp flush_accumulated_text(state) do
+    if state.current_turn_text != "" do
+      assistant_entry = %{
+        type: :assistant,
+        content: state.current_turn_text,
+        timestamp: System.system_time(:second)
+      }
+
+      %{
+        state
+        | conversation_history: state.conversation_history ++ [assistant_entry],
+          current_turn_text: ""
+      }
+    else
+      state
     end
   end
 

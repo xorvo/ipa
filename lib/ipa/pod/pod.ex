@@ -6,8 +6,10 @@ defmodule Ipa.Pod do
   - Pod State Manager (event-sourced state management)
   - Pod Communications Manager (threaded messaging and approvals)
   - Pod Scheduler (state machine and agent orchestration)
-  - Workspace Manager (agent workspace management)
   - External Sync (GitHub/JIRA integration)
+
+  Note: Workspace management is handled by the stateless `Ipa.Pod.WorkspaceManager` module,
+  which is called directly by Pod.Manager when creating workspaces.
 
   Pods use a one-for-one supervision strategy, meaning if a child crashes,
   only that child is restarted (not the entire pod).
@@ -118,9 +120,9 @@ defmodule Ipa.Pod do
   defp build_children(task_id) do
     # Start pod components in order
     # Agent Supervisor must start before Manager (Manager spawns agents via it)
+    # Note: WorkspaceManager is now a stateless module, not a GenServer
     base_children = [
       {Ipa.Agent.Supervisor, task_id: task_id},
-      {Ipa.Pod.WorkspaceManager, task_id: task_id},
       {Ipa.Pod.Manager, task_id: task_id}
     ]
 

@@ -74,7 +74,8 @@ defmodule Ipa.Pod.Event do
   defp type_to_module("agent_response_received"), do: Ipa.Pod.Events.AgentResponseReceived
   defp type_to_module("agent_marked_done"), do: Ipa.Pod.Events.AgentMarkedDone
   defp type_to_module("agent_state_snapshot"), do: Ipa.Pod.Events.AgentStateSnapshot
-  defp type_to_module("workspace_created"), do: Ipa.Pod.Events.WorkspaceCreated
+  defp type_to_module("base_workspace_created"), do: Ipa.Pod.Events.BaseWorkspaceCreated
+  defp type_to_module("sub_workspace_created"), do: Ipa.Pod.Events.SubWorkspaceCreated
   defp type_to_module("workspace_cleanup"), do: Ipa.Pod.Events.WorkspaceCleanup
   defp type_to_module("workstream_agent_started"), do: Ipa.Pod.Events.WorkstreamAgentStarted
   defp type_to_module("task_completed"), do: Ipa.Pod.Events.TaskCompleted

@@ -29,6 +29,7 @@ defmodule Ipa.Agent.Types.Workstream do
   def generate_prompt(context) do
     workstream = context[:workstream] || %{}
     task = context[:task] || %{}
+    workspace_path = context[:workspace]
 
     # Use safe field access that works for both maps and structs
     workstream_id = get_field(workstream, :workstream_id) || context[:workstream_id] || "unknown"
@@ -42,6 +43,10 @@ defmodule Ipa.Agent.Types.Workstream do
       else
         "Your dependencies are complete: #{Enum.join(dependencies, ", ")}"
       end
+
+    # Note: Workspace rules are now included via CLAUDE.md generation through ContentBlock.
+    # The agent's working directory is set via the cwd option in configure_options/1.
+    _ = workspace_path
 
     """
     You are a specialized agent working on a specific workstream within a larger task.
@@ -57,13 +62,12 @@ defmodule Ipa.Agent.Types.Workstream do
     #{dependencies_text}
 
     ## Your Mission
-    Implement the workstream spec above. Work in the `work/` directory if needed.
-    Create high-quality code with tests when appropriate.
+    Implement the workstream spec above. Create high-quality code with tests when appropriate.
 
     When done, commit your changes with a descriptive message.
 
     **IMPORTANT**: Mark your work as complete by creating a file called `WORKSTREAM_COMPLETE.md`
-    with a summary of what you accomplished. This file signals that you have finished your workstream.
+    in your workspace root with a summary of what you accomplished. This file signals that you have finished your workstream.
     """
   end
 

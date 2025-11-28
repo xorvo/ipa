@@ -33,6 +33,7 @@ defmodule Ipa.Pod.Manager do
   alias Ipa.Pod.State
   alias Ipa.Pod.State.Projector
   alias Ipa.Pod.Machine.Evaluator
+  alias Ipa.Pod.WorkspaceManager
 
   alias Ipa.Pod.Commands.{
     PhaseCommands,
@@ -203,6 +204,11 @@ defmodule Ipa.Pod.Manager do
     EventStore.subscribe(task_id)
 
     state = recover_state(task_id)
+
+    # Eagerly create base workspace on pod startup
+    # Sub-workspaces (planning, workstream) are created lazily when agents need them
+    ensure_base_workspace(task_id)
+
     schedule_evaluation(state.config.evaluation_interval)
 
     {:ok, state}
@@ -782,19 +788,31 @@ defmodule Ipa.Pod.Manager do
   end
 
   defp create_planning_workspace(task_id) do
-    # Use a temporary directory for planning agent workspace
-    base_path = Application.get_env(:ipa, :workspace_base_path, "/tmp/ipa/workspaces")
-    workspace_path = Path.join([base_path, task_id, "planning"])
+    # Ensure base workspace exists
+    ensure_base_workspace(task_id)
 
-    case File.mkdir_p(workspace_path) do
-      :ok ->
-        Logger.debug("Created planning workspace", path: workspace_path)
-        workspace_path
+    # Generate workspace name for planning
+    workspace_name = WorkspaceManager.generate_workspace_name("planning", task_id)
+
+    case WorkspaceManager.create_sub_workspace(task_id, workspace_name, %{purpose: :planning}) do
+      {:ok, path} ->
+        Logger.debug("Created planning workspace", path: path)
+        path
+
+      {:error, :already_exists} ->
+        # Workspace already exists, get the path
+        {:ok, path} = WorkspaceManager.get_sub_workspace_path(task_id, workspace_name)
+        path
 
       {:error, reason} ->
-        # Fail explicitly rather than falling back to cwd (which would cause
-        # files to be created in project root)
-        raise "Failed to create planning workspace at #{workspace_path}: #{inspect(reason)}"
+        raise "Failed to create planning workspace: #{inspect(reason)}"
+    end
+  end
+
+  defp ensure_base_workspace(task_id) do
+    case WorkspaceManager.ensure_base_workspace(task_id, %{}) do
+      {:ok, _path} -> :ok
+      {:error, reason} -> raise "Failed to create base workspace: #{inspect(reason)}"
     end
   end
 
@@ -833,21 +851,31 @@ defmodule Ipa.Pod.Manager do
   end
 
   defp create_workstream_workspace(task_id, workstream_id) do
-    # Use a temporary directory for workstream agent workspace
-    base_path = Application.get_env(:ipa, :workspace_base_path, "/tmp/ipa/workspaces")
-    workspace_path = Path.join([base_path, task_id, "workstreams", workstream_id])
+    # Ensure base workspace exists
+    ensure_base_workspace(task_id)
 
-    case File.mkdir_p(workspace_path) do
-      :ok ->
+    # Generate workspace name for workstream using workstream_id
+    workspace_name = WorkspaceManager.generate_workspace_name(nil, workstream_id)
+
+    case WorkspaceManager.create_sub_workspace(task_id, workspace_name, %{
+           workstream_id: workstream_id,
+           purpose: :workstream
+         }) do
+      {:ok, path} ->
         Logger.debug("Created workstream workspace",
-          path: workspace_path,
+          path: path,
           workstream_id: workstream_id
         )
 
-        workspace_path
+        path
+
+      {:error, :already_exists} ->
+        # Workspace already exists, get the path
+        {:ok, path} = WorkspaceManager.get_sub_workspace_path(task_id, workspace_name)
+        path
 
       {:error, reason} ->
-        raise "Failed to create workstream workspace at #{workspace_path}: #{inspect(reason)}"
+        raise "Failed to create workstream workspace: #{inspect(reason)}"
     end
   end
 

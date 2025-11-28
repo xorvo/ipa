@@ -1,728 +1,533 @@
 defmodule Ipa.Pod.WorkspaceManager do
   @moduledoc """
-  Manages isolated filesystem workspaces for agents executing within a pod.
+  Stateless module for workspace filesystem operations.
 
-  ## Primary Responsibilities
+  This module provides pure functions for creating, managing, and cleaning up
+  hierarchical workspaces. Pod.Manager orchestrates calls to this module and
+  persists workspace events.
 
-  - **Workspace Lifecycle Management**: Creates, destroys, and lists workspaces using
-    native Elixir file operations (`File.mkdir_p`, `File.rm_rf`)
-  - **Agent Execution Coordination**: Provides workspace paths to Pod Scheduler for
-    agent spawning (agents work directly in workspace via Claude Code SDK)
-  - **Workspace State Tracking**: Maintains workspace metadata and lifecycle events
-  - **File Utilities**: Provides Elixir file operations for pod-level inspection
+  ## Workspace Hierarchy
 
-  ## Architecture
+  Workspaces follow a two-level hierarchy:
 
-  The WorkspaceManager creates and manages isolated filesystem workspaces directly using
-  Elixir File operations. Each workspace has a structured directory layout that's easy
-  for both agents and humans to navigate and inspect.
+  - **Base workspace**: `{base_path}/{task_id}/` - One per task, created when pod starts
+  - **Sub-workspaces**: `{base_path}/{task_id}/sub-workspaces/{name}/` - Created as needed
 
-  Agents DO NOT use WorkspaceManager for file operations - they work directly in their
-  workspace directory via the Claude Code SDK with standard file operations.
+  ## Directory Structure
 
-  ## Workspace Directory Structure
-
-      /ipa/workspaces/{task_id}/{agent_id}/
-      ├── .ipa/                      # IPA metadata (read-only for agent)
-      │   ├── task_spec.json         # Task specification
-      │   ├── workspace_config.json  # Workspace configuration
-      │   └── context.json           # Additional task context
-      ├── CLAUDE.md                  # Injected agent instructions (if provided)
-      ├── work/                      # Agent working directory (read-write)
-      └── output/                    # Agent output artifacts (read-write)
+      {base_path}/
+        {task_id}/                           # Base workspace
+          .ipa/
+            task_spec.json
+            workspace_config.json
+          CLAUDE.md                          # Task-level agent instructions
+          AGENT.md                           # Identical to CLAUDE.md
+          work/                              # Agent working directory
+          output/                            # Agent output directory
+          sub-workspaces/
+            planning-abc123/                 # Planning sub-workspace
+              .ipa/
+                workspace_config.json
+              CLAUDE.md
+              AGENT.md
+              work/
+              output/
+            setup-db-def456/                 # Workstream sub-workspace
+              ...
 
   ## Usage
 
-      # Create workspace for agent
-      {:ok, path} = Ipa.Pod.WorkspaceManager.create_workspace(
-        "task-123",
-        "agent-456",
-        %{max_size_mb: 1000, git_config: %{enabled: true}}
-      )
-      # => Creates: /ipa/workspaces/task-123/agent-456/
-      # => Returns: {:ok, "/ipa/workspaces/task-123/agent-456"}
+      # Create base workspace for a task
+      {:ok, base_path} = WorkspaceManager.create_base_workspace("task-123", %{
+        agent_file_content: "# Task Context..."
+      })
 
-      # Agent spawns with workspace as cwd
-      options = %Ipa.Agent.Options{cwd: path, allowed_tools: ["Read", "Write", "Bash"]}
-      messages = ClaudeAgentSdkTs.stream("Complete task", Ipa.Agent.Options.to_keyword_list(options), fn msg -> msg end) |> Enum.to_list()
+      # Create sub-workspace
+      {:ok, sub_path} = WorkspaceManager.create_sub_workspace("task-123", "planning", %{
+        agent_file_content: "# Planning Context..."
+      })
 
-      # Cleanup workspace after agent completes
-      :ok = Ipa.Pod.WorkspaceManager.cleanup_workspace("task-123", "agent-456")
-      # => Removes: /ipa/workspaces/task-123/agent-456/
-
-  ## Configuration
-
-      config :ipa, Ipa.Pod.WorkspaceManager,
-        base_path: "/ipa/workspaces",
-        default_max_size_mb: 1000,
-        cleanup_on_pod_shutdown: true
+      # Cleanup
+      :ok = WorkspaceManager.cleanup_sub_workspace("task-123", "planning")
+      :ok = WorkspaceManager.cleanup_base_workspace("task-123")
   """
 
-  use GenServer
   require Logger
 
-  # Client API
+  alias Ipa.Pod.WorkspaceManager.AgentFile.ContentBlock
+
+  # ============================================================================
+  # Path Helpers
+  # ============================================================================
 
   @doc """
-  Starts the WorkspaceManager for a specific task.
-
-  ## Parameters
-
-  - `opts` - Keyword list with:
-    - `:task_id` (required) - UUID of the task
-    - `:name` (optional) - GenServer name override
-
-  ## Returns
-
-  - `{:ok, pid}` - GenServer started successfully
-  - `{:stop, reason}` - Failed to start (e.g., base path creation failed)
+  Returns the configured base path for all workspaces.
   """
-  def start_link(opts) do
-    task_id = Keyword.fetch!(opts, :task_id)
-    name = Keyword.get(opts, :name, via_tuple(task_id))
-    GenServer.start_link(__MODULE__, opts, name: name)
+  @spec base_path() :: String.t()
+  def base_path do
+    Application.get_env(:ipa, :workspace_base_path, "/tmp/ipa/workspaces")
   end
 
   @doc """
-  Creates a new workspace for an agent using native Elixir file operations.
+  Returns the path to a task's base workspace.
+  """
+  @spec task_workspace_path(String.t()) :: String.t()
+  def task_workspace_path(task_id) do
+    Path.join(base_path(), task_id)
+  end
 
-  The workspace path is returned and can be used as the `cwd` parameter when
-  spawning the agent via the Claude Code SDK.
+  @doc """
+  Returns the path to the sub-workspaces directory for a task.
+  """
+  @spec sub_workspaces_dir(String.t()) :: String.t()
+  def sub_workspaces_dir(task_id) do
+    Path.join(task_workspace_path(task_id), "sub-workspaces")
+  end
+
+  @doc """
+  Returns the path to a specific sub-workspace.
+  """
+  @spec sub_workspace_path(String.t(), String.t()) :: String.t()
+  def sub_workspace_path(task_id, workspace_name) do
+    Path.join(sub_workspaces_dir(task_id), workspace_name)
+  end
+
+  # ============================================================================
+  # Workspace Name Generation
+  # ============================================================================
+
+  @doc """
+  Generates a workspace name with a human-readable prefix and unique suffix.
+
+  ## Examples
+
+      generate_workspace_name("planning", "task-abc-123")
+      #=> "planning-abc123"
+
+      generate_workspace_name("setup database", "ws-def-456")
+      #=> "setup-database-def456"
+
+      generate_workspace_name(nil, "random-id")
+      #=> "ws-random"
+  """
+  @spec generate_workspace_name(String.t() | nil, String.t()) :: String.t()
+  def generate_workspace_name(nil, unique_suffix) do
+    short_suffix = extract_short_id(unique_suffix)
+    "ws-#{short_suffix}"
+  end
+
+  def generate_workspace_name(prefix, unique_suffix) do
+    sanitized_prefix = sanitize_name(prefix)
+    short_suffix = extract_short_id(unique_suffix)
+    "#{sanitized_prefix}-#{short_suffix}"
+  end
+
+  @doc """
+  Sanitizes a string to be safe for use as a workspace directory name.
+  """
+  @spec sanitize_name(String.t()) :: String.t()
+  def sanitize_name(name) do
+    name
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/, "-")
+    |> String.replace(~r/^-+|-+$/, "")
+    |> String.slice(0, 50)
+  end
+
+  # ============================================================================
+  # Base Workspace Operations
+  # ============================================================================
+
+  @doc """
+  Creates the base workspace for a task.
 
   ## Parameters
 
   - `task_id` - UUID of the task
-  - `agent_id` - UUID of the agent
-  - `config` - Workspace configuration map (optional fields):
-    - `:max_size_mb` - Maximum workspace size in MB (default: 1000)
-    - `:git_config` - Git configuration map (e.g., `%{enabled: true}`)
-    - `:claude_md` - CLAUDE.md content string to inject (optional)
+  - `config` - Configuration map:
+    - `:agent_file_content` - Content for CLAUDE.md/AGENT.md files
+    - `:task_spec` - Task specification to store in .ipa/task_spec.json
 
   ## Returns
 
   - `{:ok, workspace_path}` - Workspace created successfully
-  - `{:error, :workspace_exists}` - Workspace already exists
-  - `{:error, reason}` - Other creation failure
-
-  ## Example
-
-      {:ok, path} = create_workspace("task-123", "agent-456", %{
-        max_size_mb: 500,
-        git_config: %{enabled: true},
-        claude_md: "# Task Context\\n..."
-      })
+  - `{:error, :already_exists}` - Workspace already exists
+  - `{:error, reason}` - Creation failed
   """
-  @spec create_workspace(String.t(), String.t(), map()) ::
-          {:ok, String.t()} | {:error, term()}
-  def create_workspace(task_id, agent_id, config \\ %{}) do
-    GenServer.call(via_tuple(task_id), {:create_workspace, agent_id, config}, 30_000)
-  end
+  @spec create_base_workspace(String.t(), map()) :: {:ok, String.t()} | {:error, term()}
+  def create_base_workspace(task_id, config \\ %{}) do
+    workspace_path = task_workspace_path(task_id)
 
-  @doc """
-  Removes a workspace and all its contents using `File.rm_rf`.
-
-  ## Parameters
-
-  - `task_id` - UUID of the task
-  - `agent_id` - UUID of the agent
-  - `opts` - Options keyword list:
-    - `:force` - Force deletion even if files are in use (default: false)
-
-  ## Returns
-
-  - `:ok` - Workspace cleaned up successfully
-  - `{:error, :workspace_not_found}` - Workspace doesn't exist
-  - `{:error, reason}` - Other cleanup failure
-  """
-  @spec cleanup_workspace(String.t(), String.t(), keyword()) :: :ok | {:error, term()}
-  def cleanup_workspace(task_id, agent_id, opts \\ []) do
-    GenServer.call(via_tuple(task_id), {:cleanup_workspace, agent_id, opts}, 30_000)
-  end
-
-  @doc """
-  Returns the absolute path to a workspace.
-
-  ## Example
-
-      {:ok, "/ipa/workspaces/task-123/agent-456"} =
-        get_workspace_path("task-123", "agent-456")
-  """
-  @spec get_workspace_path(String.t(), String.t()) ::
-          {:ok, String.t()} | {:error, :workspace_not_found}
-  def get_workspace_path(task_id, agent_id) do
-    GenServer.call(via_tuple(task_id), {:get_workspace_path, agent_id})
-  end
-
-  @doc """
-  Lists all workspaces for a task by scanning the filesystem.
-
-  ## Returns
-
-  - `{:ok, agent_ids}` - List of agent IDs with workspaces
-  - `{:error, reason}` - List operation failed
-  """
-  @spec list_workspaces(String.t()) :: {:ok, list(String.t())} | {:error, term()}
-  def list_workspaces(task_id) do
-    GenServer.call(via_tuple(task_id), :list_workspaces)
-  end
-
-  @doc """
-  Checks if a workspace exists.
-
-  ## Example
-
-      true = workspace_exists?("task-123", "agent-456")
-  """
-  @spec workspace_exists?(String.t(), String.t()) :: boolean()
-  def workspace_exists?(task_id, agent_id) do
-    case get_workspace_path(task_id, agent_id) do
-      {:ok, _path} -> true
-      {:error, _} -> false
-    end
-  end
-
-  @doc """
-  Reads a file from within a workspace (optional utility for pod-level inspection).
-
-  NOTE: Agents DO NOT use this function - agents work directly in their workspace
-  using standard file operations via the Claude Code SDK.
-
-  ## Parameters
-
-  - `task_id` - UUID of the task
-  - `agent_id` - UUID of the agent
-  - `relative_path` - Path relative to workspace root
-
-  ## Returns
-
-  - `{:ok, content}` - File content as string
-  - `{:error, :path_outside_workspace}` - Path escapes workspace
-  - `{:error, :file_not_found}` - File doesn't exist
-  - `{:error, reason}` - Read failed
-  """
-  @spec read_file(String.t(), String.t(), String.t()) ::
-          {:ok, String.t()} | {:error, term()}
-  def read_file(task_id, agent_id, relative_path) do
-    GenServer.call(via_tuple(task_id), {:read_file, agent_id, relative_path})
-  end
-
-  @doc """
-  Writes content to a file within a workspace (optional utility for pod-level inspection).
-
-  NOTE: Agents DO NOT use this function - agents work directly in their workspace
-  using standard file operations via the Claude Code SDK.
-
-  ## Parameters
-
-  - `task_id` - UUID of the task
-  - `agent_id` - UUID of the agent
-  - `relative_path` - Path relative to workspace root
-  - `content` - Content to write
-
-  ## Returns
-
-  - `:ok` - File written successfully
-  - `{:error, :path_outside_workspace}` - Path escapes workspace
-  - `{:error, reason}` - Write failed
-  """
-  @spec write_file(String.t(), String.t(), String.t(), String.t()) ::
-          :ok | {:error, term()}
-  def write_file(task_id, agent_id, relative_path, content) do
-    GenServer.call(via_tuple(task_id), {:write_file, agent_id, relative_path, content})
-  end
-
-  @doc """
-  Lists all files and directories within a workspace as a nested tree structure.
-
-  ## Returns
-
-  - `{:ok, file_tree}` - Nested map representing directory structure
-  - `{:error, :workspace_not_found}` - Workspace doesn't exist
-  - `{:error, reason}` - Listing failed
-
-  ## Example
-
-      {:ok, %{
-        ".ipa" => %{"task_spec.json" => :file},
-        "work" => %{"lib" => %{"auth.ex" => :file}}
-      }} = list_files("task-123", "agent-456")
-  """
-  @spec list_files(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def list_files(task_id, agent_id) do
-    GenServer.call(via_tuple(task_id), {:list_files, agent_id})
-  end
-
-  # Server Callbacks
-
-  @impl true
-  def init(opts) do
-    task_id = Keyword.fetch!(opts, :task_id)
-
-    config = Application.get_env(:ipa, __MODULE__, [])
-    base_path = Keyword.get(config, :base_path, "/ipa/workspaces")
-
-    # Ensure base path exists
-    case File.mkdir_p(base_path) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        Logger.error(
-          "[WorkspaceManager] Failed to create base path #{base_path}: #{inspect(reason)}"
-        )
-
-        {:stop, {:base_path_creation_failed, reason}}
-    end
-
-    # Rebuild state from events (event-sourced)
-    {:ok, events} =
-      Ipa.EventStore.read_stream(task_id,
-        event_types: ["workspace_created", "workspace_cleanup"]
-      )
-
-    workspaces = Enum.reduce(events, %{}, &apply_workspace_event/2)
-
-    Logger.info(
-      "[WorkspaceManager] Initialized for task #{task_id}, loaded #{map_size(workspaces)} workspaces from events"
-    )
-
-    {:ok, %{task_id: task_id, base_path: base_path, workspaces: workspaces}}
-  end
-
-  @impl true
-  def handle_call({:create_workspace, agent_id, config}, _from, state) do
-    # Check if workspace already exists
-    if Map.has_key?(state.workspaces, agent_id) do
-      {:reply, {:error, :workspace_exists}, state}
+    if File.exists?(workspace_path) do
+      {:error, :already_exists}
     else
-      # Create workspace directories
-      workspace_path = Path.join([state.base_path, state.task_id, agent_id])
-
-      case create_workspace_structure(workspace_path, state.task_id, agent_id, config) do
-        :ok ->
-          # Inject CLAUDE.md if provided
-          if claude_md = config[:claude_md] do
-            claude_md_path = Path.join(workspace_path, "CLAUDE.md")
-
-            case File.write(claude_md_path, claude_md) do
-              :ok ->
-                Logger.info("[WorkspaceManager] Injected CLAUDE.md to #{claude_md_path}")
-
-              {:error, reason} ->
-                Logger.warning("[WorkspaceManager] Failed to write CLAUDE.md: #{inspect(reason)}")
-            end
-          end
-
-          # Record event
-          {:ok, _version} =
-            Ipa.EventStore.append(
-              state.task_id,
-              "workspace_created",
-              %{
-                agent_id: agent_id,
-                workspace_path: workspace_path,
-                config: config
-              },
-              actor_id: "system"
-            )
-
-          # Broadcast to pod pub-sub
-          Phoenix.PubSub.broadcast(
-            Ipa.PubSub,
-            "pod:#{state.task_id}:state",
-            {:workspace_created, state.task_id, agent_id, workspace_path}
-          )
-
-          # Update state
-          workspace_metadata = %{
-            path: workspace_path,
-            created_at: DateTime.utc_now(),
-            config: config
-          }
-
-          new_workspaces = Map.put(state.workspaces, agent_id, workspace_metadata)
-          {:reply, {:ok, workspace_path}, %{state | workspaces: new_workspaces}}
-
-        {:error, reason} ->
-          {:reply, {:error, reason}, state}
+      case do_create_base_workspace(workspace_path, task_id, config) do
+        :ok -> {:ok, workspace_path}
+        error -> error
       end
     end
   end
 
-  @impl true
-  def handle_call({:cleanup_workspace, agent_id, _opts}, _from, state) do
-    case Map.get(state.workspaces, agent_id) do
-      nil ->
-        {:reply, {:error, :workspace_not_found}, state}
+  @doc """
+  Ensures a base workspace exists, creating it if necessary.
+  """
+  @spec ensure_base_workspace(String.t(), map()) :: {:ok, String.t()} | {:error, term()}
+  def ensure_base_workspace(task_id, config \\ %{}) do
+    workspace_path = task_workspace_path(task_id)
 
-      workspace_metadata ->
-        # Delete workspace directory
-        case File.rm_rf(workspace_metadata.path) do
-          {:ok, _} ->
-            Logger.info("[WorkspaceManager] Deleted workspace: #{workspace_metadata.path}")
-
-            # Record event
-            {:ok, _version} =
-              Ipa.EventStore.append(
-                state.task_id,
-                "workspace_cleanup",
-                %{
-                  agent_id: agent_id,
-                  workspace_path: workspace_metadata.path,
-                  cleanup_reason: "explicit_cleanup"
-                },
-                actor_id: "system"
-              )
-
-            # Broadcast to pod pub-sub
-            Phoenix.PubSub.broadcast(
-              Ipa.PubSub,
-              "pod:#{state.task_id}:state",
-              {:workspace_cleanup, state.task_id, agent_id}
-            )
-
-            # Update state
-            new_workspaces = Map.delete(state.workspaces, agent_id)
-            {:reply, :ok, %{state | workspaces: new_workspaces}}
-
-          {:error, reason, _} ->
-            Logger.error(
-              "[WorkspaceManager] Failed to delete workspace: #{workspace_metadata.path}, reason: #{inspect(reason)}"
-            )
-
-            {:reply, {:error, {:cleanup_failed, reason}}, state}
-        end
-    end
-  end
-
-  @impl true
-  def handle_call({:get_workspace_path, agent_id}, _from, state) do
-    case Map.get(state.workspaces, agent_id) do
-      nil -> {:reply, {:error, :workspace_not_found}, state}
-      workspace -> {:reply, {:ok, workspace.path}, state}
-    end
-  end
-
-  @impl true
-  def handle_call(:list_workspaces, _from, state) do
-    # List workspaces by scanning filesystem
-    task_workspace_dir = Path.join(state.base_path, state.task_id)
-
-    case File.ls(task_workspace_dir) do
-      {:ok, entries} ->
-        # Filter to only directories (agent IDs)
-        agent_ids =
-          Enum.filter(entries, fn entry ->
-            File.dir?(Path.join(task_workspace_dir, entry))
-          end)
-
-        {:reply, {:ok, agent_ids}, state}
-
-      {:error, :enoent} ->
-        # Task directory doesn't exist yet - no workspaces
-        {:reply, {:ok, []}, state}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
-  end
-
-  @impl true
-  def handle_call({:read_file, agent_id, relative_path}, _from, state) do
-    with {:ok, workspace_path} <- get_workspace_path_from_state(state, agent_id),
-         {:ok, full_path} <- validate_path(workspace_path, relative_path),
-         {:ok, content} <- File.read(full_path) do
-      {:reply, {:ok, content}, state}
+    if File.exists?(workspace_path) do
+      {:ok, workspace_path}
     else
-      {:error, :enoent} -> {:reply, {:error, :file_not_found}, state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      create_base_workspace(task_id, config)
     end
   end
 
-  @impl true
-  def handle_call({:write_file, agent_id, relative_path, content}, _from, state) do
-    with {:ok, workspace_path} <- get_workspace_path_from_state(state, agent_id),
-         {:ok, full_path} <- validate_path(workspace_path, relative_path),
-         :ok <- ensure_parent_dir(full_path),
-         :ok <- File.write(full_path, content) do
-      {:reply, :ok, state}
-    else
-      {:error, reason} -> {:reply, {:error, reason}, state}
-    end
-  end
+  @doc """
+  Cleans up a task's entire base workspace, including all sub-workspaces.
+  """
+  @spec cleanup_base_workspace(String.t()) :: :ok | {:error, term()}
+  def cleanup_base_workspace(task_id) do
+    workspace_path = task_workspace_path(task_id)
 
-  @impl true
-  def handle_call({:list_files, agent_id}, _from, state) do
-    with {:ok, workspace_path} <- get_workspace_path_from_state(state, agent_id),
-         {:ok, tree} <- build_file_tree(workspace_path, workspace_path) do
-      {:reply, {:ok, tree}, state}
-    else
-      {:error, reason} -> {:reply, {:error, reason}, state}
-    end
-  end
+    if File.exists?(workspace_path) do
+      case File.rm_rf(workspace_path) do
+        {:ok, _} ->
+          Logger.info("[WorkspaceManager] Cleaned up base workspace: #{workspace_path}")
+          :ok
 
-  @impl true
-  def terminate(reason, state) do
-    Logger.info(
-      "[WorkspaceManager] Shutting down for task #{state.task_id}, reason: #{inspect(reason)}"
-    )
-
-    config = Application.get_env(:ipa, __MODULE__, [])
-
-    if Keyword.get(config, :cleanup_on_pod_shutdown, true) do
-      # Clean up all workspaces for this task
-      task_workspace_dir = Path.join(state.base_path, state.task_id)
-
-      case File.ls(task_workspace_dir) do
-        {:ok, agent_ids} ->
-          Enum.each(agent_ids, fn agent_id ->
-            workspace_path = Path.join(task_workspace_dir, agent_id)
-
-            if File.dir?(workspace_path) do
-              Logger.info("[WorkspaceManager] Cleaning up workspace for agent #{agent_id}")
-
-              case File.rm_rf(workspace_path) do
-                {:ok, _} ->
-                  Logger.info(
-                    "[WorkspaceManager] Successfully destroyed workspace for agent #{agent_id}"
-                  )
-
-                  # Best effort event recording
-                  try do
-                    Ipa.EventStore.append(
-                      state.task_id,
-                      "workspace_cleanup",
-                      %{
-                        agent_id: agent_id,
-                        workspace_path: workspace_path,
-                        cleanup_reason: "pod_shutdown"
-                      },
-                      actor_id: "system"
-                    )
-                  rescue
-                    error ->
-                      Logger.warning(
-                        "[WorkspaceManager] Could not record workspace_cleanup event: #{inspect(error)}"
-                      )
-                  end
-
-                {:error, reason, _} ->
-                  Logger.error(
-                    "[WorkspaceManager] Failed to destroy workspace for agent #{agent_id}: #{inspect(reason)}"
-                  )
-              end
-            end
-          end)
-
-        {:error, :enoent} ->
-          Logger.info("[WorkspaceManager] No workspaces to clean up")
-
-        {:error, reason} ->
-          Logger.error("[WorkspaceManager] Failed to list workspaces: #{inspect(reason)}")
+        {:error, reason, _} ->
+          Logger.error("[WorkspaceManager] Failed to cleanup base workspace: #{inspect(reason)}")
+          {:error, {:cleanup_failed, reason}}
       end
     else
-      Logger.info(
-        "[WorkspaceManager] Skipping workspace cleanup (cleanup_on_pod_shutdown: false)"
-      )
-    end
-
-    :ok
-  end
-
-  # Private Functions - Workspace Creation
-
-  defp create_workspace_structure(workspace_path, task_id, agent_id, config) do
-    try do
-      # Create main workspace directory
-      File.mkdir_p!(workspace_path)
-
-      # Create subdirectories
-      File.mkdir_p!(Path.join(workspace_path, ".ipa"))
-      File.mkdir_p!(Path.join(workspace_path, "work"))
-      File.mkdir_p!(Path.join(workspace_path, "output"))
-
-      # Write metadata files
-      task_spec_path = Path.join([workspace_path, ".ipa", "task_spec.json"])
-
-      File.write!(
-        task_spec_path,
-        Jason.encode!(%{task_id: task_id, agent_id: agent_id}, pretty: true)
-      )
-
-      workspace_config_path = Path.join([workspace_path, ".ipa", "workspace_config.json"])
-      File.write!(workspace_config_path, Jason.encode!(config, pretty: true))
-
-      context_path = Path.join([workspace_path, ".ipa", "context.json"])
-
-      File.write!(
-        context_path,
-        Jason.encode!(
-          %{
-            created_at: DateTime.utc_now() |> DateTime.to_iso8601(),
-            workspace_path: workspace_path
-          },
-          pretty: true
-        )
-      )
-
-      Logger.info("[WorkspaceManager] Created workspace structure at #{workspace_path}")
       :ok
-    rescue
-      error ->
-        Logger.error("[WorkspaceManager] Failed to create workspace: #{inspect(error)}")
-        {:error, {:workspace_creation_failed, error}}
     end
   end
 
-  # Private Functions - Event Sourcing
+  # ============================================================================
+  # Sub-Workspace Operations
+  # ============================================================================
 
-  defp apply_workspace_event(%{event_type: "workspace_created", data: data}, workspaces) do
-    Map.put(workspaces, data[:agent_id] || data["agent_id"], %{
-      path: data[:workspace_path] || data["workspace_path"],
-      created_at: data[:created_at] || data["created_at"],
-      config: data[:config] || data["config"]
-    })
-  end
+  @doc """
+  Creates a sub-workspace under a task's base workspace.
 
-  defp apply_workspace_event(%{event_type: "workspace_cleanup", data: data}, workspaces) do
-    Map.delete(workspaces, data[:agent_id] || data["agent_id"])
-  end
+  ## Parameters
 
-  defp apply_workspace_event(_event, workspaces), do: workspaces
+  - `task_id` - UUID of the task
+  - `workspace_name` - Name of the sub-workspace (should be generated via `generate_workspace_name/2`)
+  - `config` - Configuration map:
+    - `:agent_file_content` - Content for CLAUDE.md/AGENT.md files
+    - `:workstream_id` - Optional workstream ID this workspace belongs to
+    - `:purpose` - Purpose of the workspace (:planning, :workstream, etc.)
 
-  # Private Functions - Path Validation
+  ## Returns
 
-  defp get_workspace_path_from_state(state, agent_id) do
-    case Map.get(state.workspaces, agent_id) do
-      nil -> {:error, :workspace_not_found}
-      workspace -> {:ok, workspace.path}
-    end
-  end
+  - `{:ok, workspace_path}` - Sub-workspace created successfully
+  - `{:error, :base_workspace_not_exists}` - Base workspace must exist first
+  - `{:error, :already_exists}` - Sub-workspace already exists
+  - `{:error, reason}` - Creation failed
+  """
+  @spec create_sub_workspace(String.t(), String.t(), map()) :: {:ok, String.t()} | {:error, term()}
+  def create_sub_workspace(task_id, workspace_name, config \\ %{}) do
+    base_path = task_workspace_path(task_id)
+    workspace_path = sub_workspace_path(task_id, workspace_name)
 
-  defp validate_path(workspace_path, relative_path) do
-    with :ok <- validate_relative_path_format(relative_path),
-         {:ok, full_path} <- build_safe_path(workspace_path, relative_path),
-         :ok <- check_path_boundaries(full_path, workspace_path),
-         :ok <- check_symlinks(full_path, workspace_path) do
-      {:ok, full_path}
-    end
-  end
-
-  defp validate_relative_path_format(path) do
     cond do
-      String.contains?(path, "\0") ->
-        {:error, :invalid_path_null_byte}
+      not File.exists?(base_path) ->
+        {:error, :base_workspace_not_exists}
 
-      String.starts_with?(path, "/") ->
-        {:error, :absolute_path_not_allowed}
-
-      String.contains?(path, "..") ->
-        {:error, :path_traversal_attempt}
-
-      String.length(path) > 4096 ->
-        {:error, :path_too_long}
+      File.exists?(workspace_path) ->
+        {:error, :already_exists}
 
       true ->
-        :ok
-    end
-  end
-
-  defp build_safe_path(workspace_path, relative_path) do
-    full_path = Path.join(workspace_path, relative_path)
-    absolute_full = Path.expand(full_path)
-    {:ok, absolute_full}
-  end
-
-  defp check_path_boundaries(full_path, workspace_path) do
-    absolute_workspace = Path.expand(workspace_path)
-
-    if String.starts_with?(full_path, absolute_workspace <> "/") or
-         full_path == absolute_workspace do
-      :ok
-    else
-      {:error, :path_outside_workspace}
-    end
-  end
-
-  defp check_symlinks(full_path, workspace_path) do
-    absolute_workspace = Path.expand(workspace_path)
-
-    case resolve_symlinks_in_path(full_path) do
-      {:ok, resolved_path} ->
-        if String.starts_with?(resolved_path, absolute_workspace <> "/") or
-             resolved_path == absolute_workspace do
-          :ok
-        else
-          {:error, :symlink_outside_workspace}
+        case do_create_sub_workspace(workspace_path, task_id, workspace_name, config) do
+          :ok -> {:ok, workspace_path}
+          error -> error
         end
+    end
+  end
+
+  @doc """
+  Cleans up a specific sub-workspace.
+  """
+  @spec cleanup_sub_workspace(String.t(), String.t()) :: :ok | {:error, term()}
+  def cleanup_sub_workspace(task_id, workspace_name) do
+    workspace_path = sub_workspace_path(task_id, workspace_name)
+
+    if File.exists?(workspace_path) do
+      case File.rm_rf(workspace_path) do
+        {:ok, _} ->
+          Logger.info("[WorkspaceManager] Cleaned up sub-workspace: #{workspace_path}")
+          :ok
+
+        {:error, reason, _} ->
+          Logger.error("[WorkspaceManager] Failed to cleanup sub-workspace: #{inspect(reason)}")
+          {:error, {:cleanup_failed, reason}}
+      end
+    else
+      {:error, :not_found}
+    end
+  end
+
+  # ============================================================================
+  # Query Operations
+  # ============================================================================
+
+  @doc """
+  Lists all sub-workspaces for a task.
+  """
+  @spec list_sub_workspaces(String.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def list_sub_workspaces(task_id) do
+    sub_dir = sub_workspaces_dir(task_id)
+
+    case File.ls(sub_dir) do
+      {:ok, entries} ->
+        # Filter to only directories
+        workspace_names =
+          Enum.filter(entries, fn entry ->
+            File.dir?(Path.join(sub_dir, entry))
+          end)
+
+        {:ok, workspace_names}
 
       {:error, :enoent} ->
-        # File doesn't exist yet - check parent dirs
-        parent_dir = Path.dirname(full_path)
-
-        if parent_dir == full_path do
-          :ok
-        else
-          check_symlinks(parent_dir, workspace_path)
-        end
-
-      {:error, _reason} ->
-        {:error, :cannot_resolve_symlinks}
-    end
-  end
-
-  defp resolve_symlinks_in_path(path) do
-    case File.lstat(path) do
-      {:ok, %File.Stat{type: :symlink}} ->
-        # It's a symlink - resolve it
-        case File.read_link(path) do
-          {:ok, resolved} ->
-            # Make it absolute if it's relative
-            resolved_path =
-              if String.starts_with?(resolved, "/") do
-                resolved
-              else
-                Path.expand(resolved, Path.dirname(path))
-              end
-
-            {:ok, resolved_path}
-
-          {:error, reason} ->
-            {:error, reason}
-        end
-
-      {:ok, _} ->
-        # Not a symlink - return as is
-        {:ok, path}
+        {:ok, []}
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp ensure_parent_dir(full_path) do
-    parent = Path.dirname(full_path)
+  @doc """
+  Checks if a base workspace exists for a task.
+  """
+  @spec base_workspace_exists?(String.t()) :: boolean()
+  def base_workspace_exists?(task_id) do
+    File.exists?(task_workspace_path(task_id))
+  end
 
-    case File.mkdir_p(parent) do
-      :ok -> :ok
-      {:error, reason} -> {:error, reason}
+  @doc """
+  Checks if a sub-workspace exists.
+  """
+  @spec sub_workspace_exists?(String.t(), String.t()) :: boolean()
+  def sub_workspace_exists?(task_id, workspace_name) do
+    File.exists?(sub_workspace_path(task_id, workspace_name))
+  end
+
+  @doc """
+  Gets the path to a sub-workspace if it exists.
+  """
+  @spec get_sub_workspace_path(String.t(), String.t()) :: {:ok, String.t()} | {:error, :not_found}
+  def get_sub_workspace_path(task_id, workspace_name) do
+    path = sub_workspace_path(task_id, workspace_name)
+
+    if File.exists?(path) do
+      {:ok, path}
+    else
+      {:error, :not_found}
     end
   end
 
-  # Private Functions - File Tree
+  # ============================================================================
+  # File Operations (for pod-level inspection)
+  # ============================================================================
 
-  defp build_file_tree(base_path, current_path) do
-    case File.ls(current_path) do
+  @doc """
+  Reads a file from a sub-workspace.
+  """
+  @spec read_file(String.t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def read_file(task_id, workspace_name, relative_path) do
+    workspace_path = sub_workspace_path(task_id, workspace_name)
+
+    with {:ok, full_path} <- validate_path(workspace_path, relative_path),
+         {:ok, content} <- File.read(full_path) do
+      {:ok, content}
+    else
+      {:error, :enoent} -> {:error, :file_not_found}
+      error -> error
+    end
+  end
+
+  @doc """
+  Writes a file to a sub-workspace.
+  """
+  @spec write_file(String.t(), String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def write_file(task_id, workspace_name, relative_path, content) do
+    workspace_path = sub_workspace_path(task_id, workspace_name)
+
+    with {:ok, full_path} <- validate_path(workspace_path, relative_path),
+         :ok <- File.mkdir_p(Path.dirname(full_path)),
+         :ok <- File.write(full_path, content) do
+      :ok
+    end
+  end
+
+  @doc """
+  Lists files in a sub-workspace as a tree structure.
+  """
+  @spec list_files(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def list_files(task_id, workspace_name) do
+    workspace_path = sub_workspace_path(task_id, workspace_name)
+
+    if File.exists?(workspace_path) do
+      build_file_tree(workspace_path)
+    else
+      {:error, :not_found}
+    end
+  end
+
+  # ============================================================================
+  # Private Functions - Base Workspace Creation
+  # ============================================================================
+
+  defp do_create_base_workspace(workspace_path, task_id, config) do
+    try do
+      # Create directory structure
+      File.mkdir_p!(workspace_path)
+      File.mkdir_p!(Path.join(workspace_path, ".ipa"))
+      File.mkdir_p!(Path.join(workspace_path, "sub-workspaces"))
+      File.mkdir_p!(Path.join(workspace_path, "work"))
+      File.mkdir_p!(Path.join(workspace_path, "output"))
+
+      # Write metadata
+      task_spec = config[:task_spec] || %{task_id: task_id}
+      File.write!(
+        Path.join([workspace_path, ".ipa", "task_spec.json"]),
+        Jason.encode!(task_spec, pretty: true)
+      )
+
+      workspace_config = Map.drop(config, [:agent_file_content, :task_spec])
+      File.write!(
+        Path.join([workspace_path, ".ipa", "workspace_config.json"]),
+        Jason.encode!(workspace_config, pretty: true)
+      )
+
+      # Write agent files
+      agent_content = config[:agent_file_content] || default_base_workspace_content(task_id)
+      write_agent_files(workspace_path, agent_content)
+
+      Logger.info("[WorkspaceManager] Created base workspace: #{workspace_path}")
+      :ok
+    rescue
+      error ->
+        Logger.error("[WorkspaceManager] Failed to create base workspace: #{inspect(error)}")
+        # Cleanup partial creation
+        File.rm_rf(workspace_path)
+        {:error, {:creation_failed, error}}
+    end
+  end
+
+  # ============================================================================
+  # Private Functions - Sub-Workspace Creation
+  # ============================================================================
+
+  defp do_create_sub_workspace(workspace_path, task_id, workspace_name, config) do
+    try do
+      # Create directory structure
+      File.mkdir_p!(workspace_path)
+      File.mkdir_p!(Path.join(workspace_path, ".ipa"))
+      File.mkdir_p!(Path.join(workspace_path, "work"))
+      File.mkdir_p!(Path.join(workspace_path, "output"))
+
+      # Write metadata
+      workspace_config = %{
+        task_id: task_id,
+        workspace_name: workspace_name,
+        workstream_id: config[:workstream_id],
+        purpose: config[:purpose],
+        created_at: DateTime.utc_now() |> DateTime.to_iso8601()
+      }
+      File.write!(
+        Path.join([workspace_path, ".ipa", "workspace_config.json"]),
+        Jason.encode!(workspace_config, pretty: true)
+      )
+
+      # Write agent files
+      agent_content = config[:agent_file_content] || default_sub_workspace_content(task_id, workspace_name)
+      write_agent_files(workspace_path, agent_content)
+
+      Logger.info("[WorkspaceManager] Created sub-workspace: #{workspace_path}")
+      :ok
+    rescue
+      error ->
+        Logger.error("[WorkspaceManager] Failed to create sub-workspace: #{inspect(error)}")
+        File.rm_rf(workspace_path)
+        {:error, {:creation_failed, error}}
+    end
+  end
+
+  defp write_agent_files(workspace_path, content) do
+    # Write both CLAUDE.md and AGENT.md with identical content
+    File.write!(Path.join(workspace_path, "CLAUDE.md"), content)
+    File.write!(Path.join(workspace_path, "AGENT.md"), content)
+  end
+
+  defp default_base_workspace_content(task_id) do
+    ContentBlock.compose_for_base_workspace(%{
+      task_id: task_id,
+      task_title: "Task #{task_id}",
+      task_spec: "No specification provided"
+    })
+  end
+
+  defp default_sub_workspace_content(task_id, workspace_name) do
+    ContentBlock.compose_for_sub_workspace(%{
+      task_id: task_id,
+      task_title: "Task #{task_id}",
+      task_spec: "No specification provided",
+      workstream_id: workspace_name,
+      workstream_title: workspace_name,
+      workstream_spec: "No specification provided",
+      workstream_dependencies: []
+    })
+  end
+
+  # ============================================================================
+  # Private Functions - Path Validation
+  # ============================================================================
+
+  defp validate_path(workspace_path, relative_path) do
+    cond do
+      String.contains?(relative_path, "\0") ->
+        {:error, :invalid_path_null_byte}
+
+      String.starts_with?(relative_path, "/") ->
+        {:error, :absolute_path_not_allowed}
+
+      String.contains?(relative_path, "..") ->
+        {:error, :path_traversal_attempt}
+
+      String.length(relative_path) > 4096 ->
+        {:error, :path_too_long}
+
+      true ->
+        full_path = Path.join(workspace_path, relative_path) |> Path.expand()
+        expanded_workspace = Path.expand(workspace_path)
+
+        if String.starts_with?(full_path, expanded_workspace <> "/") or full_path == expanded_workspace do
+          {:ok, full_path}
+        else
+          {:error, :path_outside_workspace}
+        end
+    end
+  end
+
+  # ============================================================================
+  # Private Functions - File Tree
+  # ============================================================================
+
+  defp build_file_tree(path) do
+    case File.ls(path) do
       {:ok, entries} ->
         tree =
           Enum.reduce(entries, %{}, fn entry, acc ->
-            entry_path = Path.join(current_path, entry)
+            entry_path = Path.join(path, entry)
 
             case File.stat(entry_path) do
               {:ok, %File.Stat{type: :directory}} ->
-                case build_file_tree(base_path, entry_path) do
+                case build_file_tree(entry_path) do
                   {:ok, subtree} -> Map.put(acc, entry, subtree)
-                  {:error, _} -> acc
+                  _ -> acc
                 end
 
               {:ok, %File.Stat{type: :regular}} ->
@@ -735,17 +540,18 @@ defmodule Ipa.Pod.WorkspaceManager do
 
         {:ok, tree}
 
-      {:error, :enoent} ->
-        {:error, :workspace_not_found}
-
       {:error, reason} ->
         {:error, {:filesystem_error, reason}}
     end
   end
 
-  # Private Functions - Registry
+  # ============================================================================
+  # Private Functions - Helpers
+  # ============================================================================
 
-  defp via_tuple(task_id) do
-    {:via, Registry, {Ipa.PodRegistry, {__MODULE__, task_id}}}
+  defp extract_short_id(id) do
+    id
+    |> String.replace("-", "")
+    |> String.slice(0, 8)
   end
 end

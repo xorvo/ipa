@@ -34,7 +34,10 @@ defmodule Ipa.Agent.StreamHandler do
           | {:tool_complete, String.t(), term()}
           | {:message_start, term()}
           | {:message_stop, term()}
-          | {:unknown, term()}
+          | {:thinking, String.t()}
+          | {:result, String.t()}
+          | {:error, String.t()}
+          | :unknown
 
   @doc """
   Classifies a message from the Claude Agent SDK stream.
@@ -125,8 +128,14 @@ defmodule Ipa.Agent.StreamHandler do
       :content_block_stop ->
         {:message_stop, message}
 
-      _ ->
-        Logger.debug("Unknown message type: #{inspect(msg_type)}")
+      :unknown ->
+        # Message has no recognizable type field
+        Logger.debug("Message with no type field: #{inspect(message, limit: 200)}")
+        :unknown
+
+      other_type ->
+        # Explicitly unhandled message type - log as warning so we know to add support
+        Logger.warning("Unhandled message type '#{inspect(other_type)}': #{inspect(message, limit: 200)}")
         :unknown
     end
   end
@@ -285,10 +294,17 @@ defmodule Ipa.Agent.StreamHandler do
     delta = data[:delta] || data["delta"] || %{}
     text = delta[:text] || delta["text"]
 
-    if text && text != "" do
-      {:text_delta, text}
-    else
-      {:unknown, data}
+    cond do
+      text && text != "" ->
+        {:text_delta, text}
+
+      # Empty delta is valid - just means no text in this chunk
+      delta == %{} or text == "" or is_nil(text) ->
+        :unknown
+
+      true ->
+        Logger.warning("Unexpected content_block_delta format: #{inspect(data, limit: 200)}")
+        :unknown
     end
   end
 
@@ -298,16 +314,21 @@ defmodule Ipa.Agent.StreamHandler do
     block_type = content_block[:type] || content_block["type"]
 
     case block_type do
-      "tool_use" ->
+      type when type in ["tool_use", :tool_use] ->
         name = content_block[:name] || content_block["name"] || "unknown"
         input = content_block[:input] || content_block["input"] || %{}
         {:tool_use_start, name, input}
 
-      "text" ->
+      type when type in ["text", :text] ->
         text = content_block[:text] || content_block["text"] || ""
         {:text_delta, text}
 
-      _ ->
+      nil ->
+        # No block type - treat as message start
+        {:message_start, data}
+
+      other_type ->
+        Logger.warning("Unhandled content_block type '#{inspect(other_type)}': #{inspect(data, limit: 200)}")
         {:message_start, data}
     end
   end

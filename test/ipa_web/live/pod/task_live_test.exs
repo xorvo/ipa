@@ -256,14 +256,18 @@ defmodule IpaWeb.Pod.TaskLiveTest do
           actor_id: "scheduler"
         )
 
-      # Add workspace_created event (fires before agent_started)
+      # Add sub_workspace_created event (fires before agent_started)
       {:ok, _} =
         EventStore.append(
           task_id,
-          "workspace_created",
+          "sub_workspace_created",
           %{
+            task_id: task_id,
+            workspace_name: "ws-details-1",
+            workspace_path: workspace_path,
             agent_id: agent_id,
-            workspace_path: workspace_path
+            workstream_id: "ws-details-1",
+            purpose: :workstream
           },
           actor_id: "workspace_manager"
         )
