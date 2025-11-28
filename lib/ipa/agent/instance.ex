@@ -24,7 +24,7 @@ defmodule Ipa.Agent.Instance do
   - Agent identity (id, type, task_id, workstream_id)
   - Execution status (:initializing, :running, :awaiting_input, :completed, :failed, :interrupted)
   - Session state (Claude SDK Session PID)
-  - Streaming output (current_response, tool_calls, messages)
+  - Streaming output (conversation_history, current_turn_text)
   - Timing (started_at, completed_at)
 
   ## Event Store (Source of Truth)
@@ -61,14 +61,36 @@ defmodule Ipa.Agent.Instance do
     :completed_at,
     :query_task,
     :session,
-    :current_response,
-    :tool_calls,
-    :messages,
-    :result,
     :error,
     :context,
+    # Unified linear conversation history - single source of truth
+    # Each entry has: %{type: :system|:user|:assistant|:tool_call|:tool_result, ...}
+    conversation_history: [],
+    # Accumulator for current turn's text response (reset each turn)
+    current_turn_text: "",
+    # Current turn number (increments on each user message)
+    turn_number: 0,
     interactive: true
   ]
+
+  @type history_entry ::
+          %{type: :system, content: String.t(), timestamp: integer()}
+          | %{type: :user, content: String.t(), sent_by: String.t() | nil, timestamp: integer()}
+          | %{type: :assistant, content: String.t(), timestamp: integer()}
+          | %{
+              type: :tool_call,
+              name: String.t(),
+              args: map(),
+              call_id: String.t(),
+              timestamp: integer()
+            }
+          | %{
+              type: :tool_result,
+              name: String.t(),
+              result: String.t() | nil,
+              call_id: String.t(),
+              timestamp: integer()
+            }
 
   @type t :: %__MODULE__{
           agent_id: String.t(),
@@ -83,12 +105,11 @@ defmodule Ipa.Agent.Instance do
           completed_at: DateTime.t() | nil,
           query_task: Task.t() | nil,
           session: pid() | nil,
-          current_response: String.t(),
-          tool_calls: [map()],
-          messages: [map()],
-          result: term(),
           error: String.t() | nil,
           context: map(),
+          conversation_history: [history_entry()],
+          current_turn_text: String.t(),
+          turn_number: integer(),
           interactive: boolean()
         }
 
@@ -198,9 +219,9 @@ defmodule Ipa.Agent.Instance do
       status: :initializing,
       started_at: DateTime.utc_now(),
       session: session,
-      current_response: "",
-      tool_calls: [],
-      messages: [],
+      conversation_history: [],
+      current_turn_text: "",
+      turn_number: 0,
       context: context,
       interactive: interactive
     }
@@ -227,14 +248,14 @@ defmodule Ipa.Agent.Instance do
 
   @impl true
   def handle_info({:run_query, prompt}, state) do
-    # Record the initial prompt as the first message in conversation history
-    # This ensures the prompt is persisted and visible in the conversation view
-    record_lifecycle_event(state, "agent_message_sent", %{
-      agent_id: state.agent_id,
-      message: prompt,
-      sent_by: "system",
-      role: :system
-    })
+    # Add the initial prompt to conversation history
+    system_entry = %{
+      type: :system,
+      content: prompt,
+      timestamp: System.system_time(:second)
+    }
+
+    state = %{state | conversation_history: [system_entry]}
 
     # Spawn a Task to run the Claude SDK Session query
     # The Task sends messages back to this GenServer as they arrive
@@ -292,19 +313,24 @@ defmodule Ipa.Agent.Instance do
   @impl true
   def handle_call(:get_state, _from, state) do
     # Return a map representation of the state (not the struct)
+    # This is the single source of truth for agent state
     state_map = %{
       agent_id: state.agent_id,
       agent_type: state.agent_type.agent_type(),
       task_id: state.task_id,
       workstream_id: state.workstream_id,
-      workspace: state.workspace_path,
+      workspace_path: state.workspace_path,
       prompt: state.prompt,
       status: state.status,
       started_at: state.started_at,
       completed_at: state.completed_at,
-      current_response: state.current_response,
-      tool_calls: state.tool_calls,
-      error: state.error
+      error: state.error,
+      # Unified conversation history - single source of truth
+      conversation_history: state.conversation_history,
+      # Current turn's accumulated text (for streaming display)
+      current_turn_text: state.current_turn_text,
+      turn_number: state.turn_number,
+      interactive: state.interactive
     }
 
     {:reply, state_map, state}
@@ -354,8 +380,25 @@ defmodule Ipa.Agent.Instance do
         message_preview: String.slice(message, 0, 50)
       )
 
-      # Reset current_response for the new turn
-      state = %{state | status: :running, current_response: ""}
+      # Add user message to conversation history
+      user_entry = %{
+        type: :user,
+        content: message,
+        sent_by: "user",
+        timestamp: System.system_time(:second)
+      }
+
+      # Reset current_turn_text for the new turn and increment turn number
+      state = %{
+        state
+        | status: :running,
+          current_turn_text: "",
+          turn_number: state.turn_number + 1,
+          conversation_history: state.conversation_history ++ [user_entry]
+      }
+
+      # Broadcast state update for UI
+      broadcast_state_update(state)
 
       # Spawn a Task to run the message through the session
       parent = self()
@@ -397,7 +440,10 @@ defmodule Ipa.Agent.Instance do
           session: nil
       }
 
-      # Record to Event Store
+      # Persist final state snapshot
+      persist_state_snapshot(new_state)
+
+      # Record lifecycle event
       record_lifecycle_event(new_state, "agent_marked_done", %{
         agent_id: state.agent_id,
         marked_by: "user",
@@ -405,7 +451,7 @@ defmodule Ipa.Agent.Instance do
       })
 
       # Call the agent type's completion handler (e.g., to process plan files)
-      result = %{workspace: state.workspace_path, response: state.current_response}
+      result = %{workspace: state.workspace_path, response: get_latest_response(new_state)}
 
       case state.agent_type.handle_completion(result, state.context) do
         :ok ->
@@ -423,6 +469,7 @@ defmodule Ipa.Agent.Instance do
 
       # Notify via PubSub
       notify_lifecycle(new_state, :agent_completed)
+      broadcast_state_update(new_state)
 
       {:reply, :ok, new_state}
     end
@@ -527,19 +574,24 @@ defmodule Ipa.Agent.Instance do
   defp process_stream_message(message, state) do
     case Ipa.Agent.StreamHandler.classify_message(message) do
       {:text_delta, text} ->
-        new_response = state.current_response <> text
-        # Broadcast streaming data via PubSub (ephemeral, for LiveView)
+        # Accumulate text for current turn
+        new_turn_text = state.current_turn_text <> text
+        # Broadcast streaming data via PubSub (for real-time LiveView updates)
         broadcast_stream(state, :text_delta, %{text: text})
-        %{state | current_response: new_response, messages: [message | state.messages]}
+        # Also broadcast state update signal so LiveView knows to refresh
+        broadcast_state_update(state)
+        %{state | current_turn_text: new_turn_text}
 
       {:tool_use_start, tool_name, args} ->
-        tool_call = %{
-          id: generate_tool_call_id(),
+        call_id = generate_tool_call_id()
+
+        # Add tool_call entry to conversation history
+        tool_call_entry = %{
+          type: :tool_call,
           name: tool_name,
           args: args,
-          status: :running,
-          started_at: DateTime.utc_now(),
-          result: nil
+          call_id: call_id,
+          timestamp: System.system_time(:second)
         }
 
         # Call agent type's tool call handler if defined
@@ -547,28 +599,55 @@ defmodule Ipa.Agent.Instance do
           state.agent_type.handle_tool_call(tool_name, args, state.context)
         end
 
-        # Broadcast streaming data via PubSub (ephemeral)
-        broadcast_stream(state, :tool_start, %{tool_name: tool_name, args: args})
+        # Broadcast streaming data via PubSub
+        broadcast_stream(state, :tool_start, %{tool_name: tool_name, args: args, call_id: call_id})
+        broadcast_state_update(state)
 
-        %{
-          state
-          | tool_calls: [tool_call | state.tool_calls],
-            messages: [message | state.messages]
-        }
+        %{state | conversation_history: state.conversation_history ++ [tool_call_entry]}
 
       {:tool_complete, tool_name, result} ->
-        tool_calls = update_tool_call_result(state.tool_calls, tool_name, result)
-        # Broadcast streaming data via PubSub (ephemeral)
-        broadcast_stream(state, :tool_complete, %{tool_name: tool_name, result: result})
-        %{state | tool_calls: tool_calls, messages: [message | state.messages]}
+        # Find the matching tool_call to get its call_id
+        call_id =
+          state.conversation_history
+          |> Enum.reverse()
+          |> Enum.find_value(fn
+            %{type: :tool_call, name: ^tool_name, call_id: id} -> id
+            _ -> nil
+          end) || "unknown"
+
+        # Add tool_result entry to conversation history
+        tool_result_entry = %{
+          type: :tool_result,
+          name: tool_name,
+          result: truncate_result(result),
+          call_id: call_id,
+          timestamp: System.system_time(:second)
+        }
+
+        # Broadcast streaming data via PubSub
+        broadcast_stream(state, :tool_complete, %{tool_name: tool_name, result: result, call_id: call_id})
+        broadcast_state_update(state)
+
+        %{state | conversation_history: state.conversation_history ++ [tool_result_entry]}
 
       {:message_stop, _} ->
-        %{state | messages: [message | state.messages]}
+        state
 
       _ ->
-        %{state | messages: [message | state.messages]}
+        state
     end
   end
+
+  # Truncate large tool results to prevent bloating conversation history
+  defp truncate_result(nil), do: nil
+  defp truncate_result(result) when is_binary(result) do
+    if String.length(result) > 2000 do
+      String.slice(result, 0, 2000) <> "... [truncated]"
+    else
+      result
+    end
+  end
+  defp truncate_result(result), do: inspect(result, limit: 500)
 
   defp handle_agent_success(state, _final_messages) do
     Logger.info("Agent turn completed", agent_id: state.agent_id, interactive: state.interactive)
@@ -584,38 +663,68 @@ defmodule Ipa.Agent.Instance do
 
   # Handle turn completion for interactive agents - transition to awaiting_input
   defp handle_interactive_turn_complete(state) do
+    # Finalize the assistant's response by adding it to conversation history
+    state =
+      if state.current_turn_text != "" do
+        assistant_entry = %{
+          type: :assistant,
+          content: state.current_turn_text,
+          timestamp: System.system_time(:second)
+        }
+
+        %{
+          state
+          | conversation_history: state.conversation_history ++ [assistant_entry],
+            current_turn_text: ""
+        }
+      else
+        state
+      end
+
     new_state = %{
       state
       | status: :awaiting_input,
         query_task: nil
     }
 
-    # Record agent's response to conversation history
-    # This stores the agent's output so it appears in the conversation
-    if state.current_response != "" do
-      record_lifecycle_event(new_state, "agent_response_received", %{
-        agent_id: state.agent_id,
-        response: state.current_response
-      })
-    end
+    # Persist state snapshot to EventStore
+    persist_state_snapshot(new_state)
 
-    # Record to Event Store
+    # Record status change event
     record_lifecycle_event(new_state, "agent_awaiting_input", %{
-      agent_id: state.agent_id,
-      prompt_for_user: nil,
-      current_output: state.current_response
+      agent_id: new_state.agent_id,
+      turn_number: new_state.turn_number
     })
 
     # Notify via PubSub
     notify_lifecycle(new_state, :agent_awaiting_input)
+    broadcast_state_update(new_state)
 
     new_state
   end
 
   # Handle final completion for non-interactive agents
   defp handle_final_completion(state) do
+    # Finalize the assistant's response by adding it to conversation history
+    state =
+      if state.current_turn_text != "" do
+        assistant_entry = %{
+          type: :assistant,
+          content: state.current_turn_text,
+          timestamp: System.system_time(:second)
+        }
+
+        %{
+          state
+          | conversation_history: state.conversation_history ++ [assistant_entry],
+            current_turn_text: ""
+        }
+      else
+        state
+      end
+
     # Call the agent type's completion handler
-    result = %{workspace: state.workspace_path, response: state.current_response}
+    result = %{workspace: state.workspace_path, response: get_latest_response(state)}
 
     completion_result =
       case state.agent_type.handle_completion(result, state.context) do
@@ -646,6 +755,9 @@ defmodule Ipa.Agent.Instance do
 
     new_state = %{new_state | session: nil}
 
+    # Persist final state snapshot to EventStore
+    persist_state_snapshot(new_state)
+
     # Calculate duration
     duration_ms =
       if state.started_at do
@@ -653,20 +765,16 @@ defmodule Ipa.Agent.Instance do
       end
 
     # Convert completion_result to JSON-serializable format
-    # completion_result is only :ok or {:error, reason} from handle_completion
     serializable_completion_result =
       case completion_result do
         :ok -> %{status: "ok"}
         {:error, reason} -> %{status: "error", reason: inspect(reason)}
       end
 
-    # Record to Event Store (source of truth)
-    # Store the full output for persistent history (not truncated)
+    # Record completion event (for scheduler/lifecycle tracking)
     record_lifecycle_event(new_state, "agent_completed", %{
       agent_id: state.agent_id,
       duration_ms: duration_ms,
-      result_summary: String.slice(state.current_response, 0, 1000),
-      output: state.current_response,
       completion_handler_result: serializable_completion_result
     })
 
@@ -675,8 +783,19 @@ defmodule Ipa.Agent.Instance do
 
     # Notify via PubSub (just a signal)
     notify_lifecycle(new_state, :agent_completed)
+    broadcast_state_update(new_state)
 
     new_state
+  end
+
+  # Get the latest assistant response from conversation history
+  defp get_latest_response(state) do
+    state.conversation_history
+    |> Enum.reverse()
+    |> Enum.find_value("", fn
+      %{type: :assistant, content: content} -> content
+      _ -> nil
+    end)
   end
 
   defp handle_agent_failure(state, reason) do
@@ -721,16 +840,6 @@ defmodule Ipa.Agent.Instance do
     inspect(reason)
   end
 
-  defp update_tool_call_result(tool_calls, tool_name, result) do
-    Enum.map(tool_calls, fn call ->
-      if call.name == tool_name && call.status == :running do
-        %{call | status: :completed, result: result, completed_at: DateTime.utc_now()}
-      else
-        call
-      end
-    end)
-  end
-
   defp generate_tool_call_id do
     :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
   end
@@ -765,9 +874,57 @@ defmodule Ipa.Agent.Instance do
     end
   end
 
+  # Persist conversation state snapshot to EventStore
+  # This is called at turn completion or when agent is done
+  defp persist_state_snapshot(state) do
+    # Build the snapshot data with the unified conversation history
+    snapshot_data = %{
+      agent_id: state.agent_id,
+      conversation_history: state.conversation_history,
+      status: state.status,
+      turn_number: state.turn_number
+    }
+
+    case Ipa.EventStore.append(
+           state.task_id,
+           "agent_state_snapshot",
+           snapshot_data,
+           actor_id: "agent:#{state.agent_id}"
+         ) do
+      {:ok, _version} ->
+        Logger.debug("Persisted agent state snapshot",
+          agent_id: state.agent_id,
+          task_id: state.task_id,
+          history_length: length(state.conversation_history)
+        )
+
+        :ok
+
+      {:error, reason} ->
+        Logger.error("Failed to persist agent state snapshot",
+          agent_id: state.agent_id,
+          task_id: state.task_id,
+          error: inspect(reason)
+        )
+
+        {:error, reason}
+    end
+  end
+
   # ============================================================================
   # PubSub - Notifications & Streaming
   # ============================================================================
+
+  # Broadcast state update signal (LiveView should fetch fresh state from Instance)
+  defp broadcast_state_update(state) do
+    # Broadcast to agent-specific topic to signal state has changed
+    # LiveViews should fetch fresh state from Agent.Instance.get_state/1
+    Phoenix.PubSub.broadcast(
+      Ipa.PubSub,
+      "agent:#{state.agent_id}:state",
+      {:state_updated, state.agent_id}
+    )
+  end
 
   # Broadcast streaming data (ephemeral, for LiveView real-time updates)
   defp broadcast_stream(state, event_type, data) do

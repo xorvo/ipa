@@ -14,7 +14,8 @@ defmodule Ipa.Pod.State.Projections.AgentProjection do
     AgentAwaitingInput,
     AgentMessageSent,
     AgentResponseReceived,
-    AgentMarkedDone
+    AgentMarkedDone,
+    AgentStateSnapshot
   }
 
   @doc "Applies an agent event to state."
@@ -154,6 +155,25 @@ defmodule Ipa.Pod.State.Projections.AgentProjection do
         | status: :completed,
           completed_at: System.system_time(:second)
       }
+    end)
+  end
+
+  def apply(state, %AgentStateSnapshot{} = event) do
+    update_agent(state, event.agent_id, fn agent ->
+      # Update conversation history from the snapshot
+      # Also update status if provided
+      agent =
+        if event.conversation_history do
+          %{agent | conversation_history: event.conversation_history}
+        else
+          agent
+        end
+
+      if event.status do
+        %{agent | status: event.status}
+      else
+        agent
+      end
     end)
   end
 

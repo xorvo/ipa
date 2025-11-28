@@ -35,36 +35,23 @@ defmodule IpaWeb.Pod.AgentDetailLive do
     if connected?(socket) && task_id && agent_id do
       Logger.info("AgentDetailLive mounted for agent #{agent_id}, pid=#{inspect(self())}")
 
-      # Subscribe to this agent's stream for live updates
-      topic = "agent:#{agent_id}:stream"
-      Logger.info("AgentDetailLive subscribing to #{topic}, pid=#{inspect(self())}")
-      Phoenix.PubSub.subscribe(Ipa.PubSub, topic)
+      # Subscribe to this agent's stream for live updates (text deltas, tool events)
+      stream_topic = "agent:#{agent_id}:stream"
+      Logger.info("AgentDetailLive subscribing to #{stream_topic}, pid=#{inspect(self())}")
+      Phoenix.PubSub.subscribe(Ipa.PubSub, stream_topic)
 
-      # Subscribe to EventStore for agent events
+      # Subscribe to state update topic (signals state has changed)
+      state_topic = "agent:#{agent_id}:state"
+      Logger.info("AgentDetailLive subscribing to #{state_topic}")
+      Phoenix.PubSub.subscribe(Ipa.PubSub, state_topic)
+
+      # Subscribe to EventStore for agent events (for plan updates and lifecycle)
       Ipa.EventStore.subscribe(task_id)
 
-      # Load initial agent state
-      case Ipa.Pod.Manager.get_state_from_events(task_id) do
-        {:ok, state} ->
-          agent = Enum.find(state.agents || [], fn a -> a.agent_id == agent_id end)
-          Logger.info("AgentDetailLive found agent: #{inspect(agent && agent.agent_id)}, status: #{inspect(agent && agent.status)}")
+      # Load initial agent state - prefer live Instance state if agent is running
+      socket = load_agent_state(socket, task_id, agent_id)
 
-          # Initialize streaming_output with persisted output only if:
-          # - Agent is completed/failed AND has output AND has no conversation history
-          # This is a fallback for agents that completed before conversation history was implemented
-          streaming_output =
-            if agent && agent.status in [:completed, :failed] && agent.output &&
-                 Enum.empty?(agent.conversation_history || []) do
-              agent.output
-            else
-              ""
-            end
-
-          {:ok, assign(socket, agent: agent, plan: state.plan, streaming_output: streaming_output)}
-
-        {:error, _} ->
-          {:ok, socket}
-      end
+      {:ok, socket}
     else
       {:ok, socket}
     end
@@ -685,6 +672,14 @@ defmodule IpaWeb.Pod.AgentDetailLive do
     end
   end
 
+  # Handle state update signal from Agent.Instance
+  def handle_info({:state_updated, agent_id}, socket)
+      when agent_id == socket.assigns.agent_id do
+    Logger.debug("AgentDetailLive received state_updated for #{agent_id}")
+    socket = load_agent_state(socket, socket.assigns.task_id, agent_id)
+    {:noreply, socket}
+  end
+
   # Catch-all for other messages
   def handle_info(msg, socket) do
     Logger.debug("AgentDetailLive catch-all received: #{inspect(msg, limit: 100)}")
@@ -836,4 +831,131 @@ defmodule IpaWeb.Pod.AgentDetailLive do
   defp is_planning_agent?(%{agent_type: "planning"}), do: true
   defp is_planning_agent?(%{agent_type: "planning_agent"}), do: true
   defp is_planning_agent?(_), do: false
+
+  # Load agent state - prefer live Instance state if agent is running
+  defp load_agent_state(socket, task_id, agent_id) do
+    # First try to get live state from Agent.Instance
+    instance_state =
+      case Ipa.Agent.Instance.get_state(agent_id) do
+        {:ok, state} -> state
+        {:error, :not_found} -> nil
+      end
+
+    # Get persisted state from EventStore
+    persisted_state =
+      case Ipa.Pod.Manager.get_state_from_events(task_id) do
+        {:ok, state} ->
+          agent = Enum.find(state.agents || [], fn a -> a.agent_id == agent_id end)
+          %{agent: agent, plan: state.plan}
+
+        {:error, _} ->
+          %{agent: nil, plan: nil}
+      end
+
+    # Merge the states - prefer Instance state for live data
+    agent =
+      if instance_state do
+        # Agent process is alive - build agent map from Instance state
+        # but keep any fields from persisted state that Instance doesn't track
+        base_agent = persisted_state.agent || %{}
+
+        # Convert Instance state to agent-like map, merging with persisted fields
+        %{
+          agent_id: instance_state.agent_id,
+          agent_type: instance_state.agent_type,
+          workstream_id: instance_state.workstream_id,
+          workspace_path: instance_state.workspace_path,
+          status: instance_state.status,
+          started_at: instance_state.started_at,
+          completed_at: instance_state.completed_at,
+          error: instance_state.error,
+          # Use Instance's unified conversation history
+          conversation_history: convert_to_ui_format(instance_state.conversation_history || []),
+          # Use Instance's streaming text for current turn
+          output: instance_state.current_turn_text,
+          interactive: instance_state.interactive
+        }
+        |> Map.merge(Map.take(base_agent, [:prompt]))
+      else
+        # Agent process not alive - use persisted state
+        # Convert old format to new format if needed
+        if persisted_state.agent do
+          agent = persisted_state.agent
+          # Ensure conversation_history is in the new format
+          history = agent.conversation_history || []
+          converted_history = convert_to_ui_format(history)
+          Map.put(agent, :conversation_history, converted_history)
+        else
+          nil
+        end
+      end
+
+    # Determine streaming output - only for live agents with current turn text
+    streaming_output =
+      if instance_state && instance_state.current_turn_text != "" do
+        instance_state.current_turn_text
+      else
+        ""
+      end
+
+    Logger.info("AgentDetailLive loaded agent state",
+      agent_id: agent_id,
+      from_instance: instance_state != nil,
+      status: agent && agent.status,
+      history_length: length((agent && agent.conversation_history) || [])
+    )
+
+    socket
+    |> assign(agent: agent, plan: persisted_state.plan)
+    |> assign(streaming_output: streaming_output)
+  end
+
+  # Convert unified conversation history to UI format
+  # The new format has :type instead of :role, so we convert for display
+  defp convert_to_ui_format(history) when is_list(history) do
+    Enum.map(history, fn entry ->
+      type = entry[:type] || entry["type"]
+
+      case type do
+        t when t in [:system, "system"] ->
+          %{role: :system, content: entry[:content] || entry["content"], timestamp: entry[:timestamp] || entry["timestamp"]}
+
+        t when t in [:user, "user"] ->
+          %{role: :user, content: entry[:content] || entry["content"], sent_by: entry[:sent_by] || entry["sent_by"], timestamp: entry[:timestamp] || entry["timestamp"]}
+
+        t when t in [:assistant, "assistant"] ->
+          %{role: :assistant, content: entry[:content] || entry["content"], timestamp: entry[:timestamp] || entry["timestamp"]}
+
+        t when t in [:tool_call, "tool_call"] ->
+          # Display tool calls as assistant messages
+          tool_name = entry[:name] || entry["name"]
+          args = entry[:args] || entry["args"] || %{}
+          content = "🔧 Using tool: #{tool_name}\nArgs: #{inspect(args, pretty: true, limit: 500)}"
+          %{role: :assistant, content: content, timestamp: entry[:timestamp] || entry["timestamp"]}
+
+        t when t in [:tool_result, "tool_result"] ->
+          # Display tool results as assistant messages
+          tool_name = entry[:name] || entry["name"]
+          result = entry[:result] || entry["result"]
+          content = "✓ Tool #{tool_name} complete\nResult: #{truncate_for_display(result)}"
+          %{role: :assistant, content: content, timestamp: entry[:timestamp] || entry["timestamp"]}
+
+        _ ->
+          # Old format with :role key - pass through
+          entry
+      end
+    end)
+  end
+
+  defp convert_to_ui_format(nil), do: []
+
+  defp truncate_for_display(nil), do: "(no output)"
+  defp truncate_for_display(result) when is_binary(result) do
+    if String.length(result) > 500 do
+      String.slice(result, 0, 500) <> "..."
+    else
+      result
+    end
+  end
+  defp truncate_for_display(result), do: inspect(result, limit: 500)
 end

@@ -67,7 +67,8 @@ defmodule Ipa.Agent.Supervisor do
   """
   @spec start_agent(String.t(), module(), map()) :: {:ok, String.t()} | {:error, term()}
   def start_agent(task_id, agent_type, context) do
-    agent_id = generate_agent_id(agent_type)
+    # Use provided agent_id if present (for manually started agents), otherwise generate one
+    agent_id = context[:agent_id] || generate_agent_id(agent_type)
 
     Logger.info("Starting agent",
       task_id: task_id,

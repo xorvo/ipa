@@ -481,3 +481,129 @@ defmodule Ipa.Pod.Events.AgentMarkedDone do
 
   defp get_field(data, key), do: data[key] || data[to_string(key)]
 end
+
+defmodule Ipa.Pod.Events.AgentStateSnapshot do
+  @moduledoc """
+  Event that captures the complete agent state including unified conversation history.
+
+  This is the primary way agent conversation state is persisted. It captures:
+  - The unified linear conversation history (system, user, assistant, tool_call, tool_result entries)
+  - Current status
+  - Turn number
+
+  This replaces the more granular AgentMessageSent/AgentResponseReceived events
+  with a single snapshot event that is recorded at turn completion or agent shutdown.
+  """
+  @behaviour Ipa.Pod.Event
+
+  @enforce_keys [:task_id, :agent_id, :conversation_history]
+  defstruct [:task_id, :agent_id, :conversation_history, :status, :turn_number]
+
+  @type history_entry ::
+          %{type: :system, content: String.t(), timestamp: integer()}
+          | %{type: :user, content: String.t(), sent_by: String.t() | nil, timestamp: integer()}
+          | %{type: :assistant, content: String.t(), timestamp: integer()}
+          | %{
+              type: :tool_call,
+              name: String.t(),
+              args: map(),
+              call_id: String.t(),
+              timestamp: integer()
+            }
+          | %{
+              type: :tool_result,
+              name: String.t(),
+              result: String.t() | nil,
+              call_id: String.t(),
+              timestamp: integer()
+            }
+
+  @type t :: %__MODULE__{
+          task_id: String.t(),
+          agent_id: String.t(),
+          conversation_history: [history_entry()],
+          status: atom() | nil,
+          turn_number: integer() | nil
+        }
+
+  @impl true
+  def event_type, do: "agent_state_snapshot"
+
+  @impl true
+  def to_map(%__MODULE__{} = event) do
+    %{
+      task_id: event.task_id,
+      agent_id: event.agent_id,
+      conversation_history: event.conversation_history,
+      status: event.status,
+      turn_number: event.turn_number
+    }
+  end
+
+  @impl true
+  def from_map(data) do
+    %__MODULE__{
+      task_id: get_field(data, :task_id),
+      agent_id: get_field(data, :agent_id),
+      conversation_history: normalize_history(get_field(data, :conversation_history) || []),
+      status: normalize_status(get_field(data, :status)),
+      turn_number: get_field(data, :turn_number)
+    }
+  end
+
+  defp get_field(data, key), do: data[key] || data[to_string(key)]
+
+  defp normalize_status(nil), do: nil
+  defp normalize_status(status) when is_atom(status), do: status
+  defp normalize_status(status) when is_binary(status), do: String.to_existing_atom(status)
+
+  defp normalize_history(history) when is_list(history) do
+    Enum.map(history, &normalize_history_entry/1)
+  end
+
+  defp normalize_history_entry(entry) when is_map(entry) do
+    type = normalize_entry_type(entry["type"] || entry[:type])
+
+    base = %{
+      type: type,
+      timestamp: entry["timestamp"] || entry[:timestamp] || System.system_time(:second)
+    }
+
+    case type do
+      :system ->
+        Map.put(base, :content, entry["content"] || entry[:content])
+
+      :user ->
+        base
+        |> Map.put(:content, entry["content"] || entry[:content])
+        |> Map.put(:sent_by, entry["sent_by"] || entry[:sent_by])
+
+      :assistant ->
+        Map.put(base, :content, entry["content"] || entry[:content])
+
+      :tool_call ->
+        base
+        |> Map.put(:name, entry["name"] || entry[:name])
+        |> Map.put(:args, entry["args"] || entry[:args] || %{})
+        |> Map.put(:call_id, entry["call_id"] || entry[:call_id])
+
+      :tool_result ->
+        base
+        |> Map.put(:name, entry["name"] || entry[:name])
+        |> Map.put(:result, entry["result"] || entry[:result])
+        |> Map.put(:call_id, entry["call_id"] || entry[:call_id])
+    end
+  end
+
+  defp normalize_entry_type(:system), do: :system
+  defp normalize_entry_type("system"), do: :system
+  defp normalize_entry_type(:user), do: :user
+  defp normalize_entry_type("user"), do: :user
+  defp normalize_entry_type(:assistant), do: :assistant
+  defp normalize_entry_type("assistant"), do: :assistant
+  defp normalize_entry_type(:tool_call), do: :tool_call
+  defp normalize_entry_type("tool_call"), do: :tool_call
+  defp normalize_entry_type(:tool_result), do: :tool_result
+  defp normalize_entry_type("tool_result"), do: :tool_result
+  defp normalize_entry_type(_), do: :system
+end
