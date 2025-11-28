@@ -50,6 +50,140 @@ const Hooks = {
     scrollToBottom() {
       this.el.scrollTop = this.el.scrollHeight
     }
+  },
+
+  // Markdown rendering with syntax highlighting
+  Markdown: {
+    mounted() {
+      this.render()
+    },
+    updated() {
+      this.render()
+    },
+    render() {
+      const content = this.el.dataset.content
+      if (!content || !window.marked) return
+
+      // Configure marked with highlight.js
+      marked.setOptions({
+        highlight: function(code, lang) {
+          if (window.hljs && lang && hljs.getLanguage(lang)) {
+            try {
+              return hljs.highlight(code, { language: lang }).value
+            } catch (e) {}
+          }
+          if (window.hljs) {
+            try {
+              return hljs.highlightAuto(code).value
+            } catch (e) {}
+          }
+          return code
+        },
+        breaks: true,
+        gfm: true
+      })
+
+      // Render markdown
+      this.el.innerHTML = marked.parse(content)
+
+      // Apply highlight.js to any code blocks that weren't caught
+      if (window.hljs) {
+        this.el.querySelectorAll('pre code').forEach((block) => {
+          if (!block.classList.contains('hljs')) {
+            hljs.highlightElement(block)
+          }
+        })
+      }
+    }
+  },
+
+  // Collapsible section for tool calls
+  Collapsible: {
+    mounted() {
+      const toggle = this.el.querySelector('[data-collapse-toggle]')
+      const content = this.el.querySelector('[data-collapse-content]')
+      const iconWrapper = this.el.querySelector('[data-collapse-icon-wrapper]')
+
+      if (toggle && content) {
+        // Start collapsed by default
+        content.style.display = 'none'
+
+        toggle.addEventListener('click', () => {
+          const isHidden = content.style.display === 'none'
+          content.style.display = isHidden ? 'block' : 'none'
+          if (iconWrapper) {
+            // Rotate the wrapper (which contains the chevron icon)
+            iconWrapper.style.transform = isHidden ? 'rotate(90deg)' : 'rotate(0deg)'
+            // Keep icon visible when expanded
+            const icon = iconWrapper.querySelector('span, svg')
+            if (icon) {
+              icon.style.opacity = isHidden ? '1' : ''
+            }
+          }
+        })
+      }
+    }
+  },
+
+  // Diff viewer using diff2html
+  DiffView: {
+    mounted() {
+      this.render()
+    },
+    updated() {
+      this.render()
+    },
+    render() {
+      const oldStr = this.el.dataset.oldString || ''
+      const newStr = this.el.dataset.newString || ''
+      const filePath = this.el.dataset.filePath || 'file'
+
+      if (!window.Diff2Html) return
+
+      // Create unified diff format
+      const diff = this.createUnifiedDiff(oldStr, newStr, filePath)
+
+      // Render with diff2html
+      const html = Diff2Html.html(diff, {
+        drawFileList: false,
+        matching: 'lines',
+        outputFormat: 'line-by-line',
+        renderNothingWhenEmpty: false
+      })
+
+      this.el.innerHTML = html
+    },
+    createUnifiedDiff(oldStr, newStr, fileName) {
+      // Simple line-by-line diff creation
+      const oldLines = oldStr.split('\n')
+      const newLines = newStr.split('\n')
+
+      let diff = `--- a/${fileName}\n+++ b/${fileName}\n@@ -1,${oldLines.length} +1,${newLines.length} @@\n`
+
+      // For simplicity, just show removed and added
+      oldLines.forEach(line => {
+        if (line) diff += `-${line}\n`
+      })
+      newLines.forEach(line => {
+        if (line) diff += `+${line}\n`
+      })
+
+      return diff
+    }
+  },
+
+  // Open in editor link handler
+  EditorLink: {
+    mounted() {
+      this.el.addEventListener('click', (e) => {
+        e.preventDefault()
+        const path = this.el.dataset.path
+        const line = this.el.dataset.line || '1'
+
+        // Send event to LiveView to open in editor
+        this.pushEvent('open_in_editor', { path: path, line: line })
+      })
+    }
   }
 }
 

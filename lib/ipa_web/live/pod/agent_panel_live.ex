@@ -480,8 +480,6 @@ defmodule IpaWeb.Pod.AgentPanelLive do
     is_awaiting_input = assigns.agent.status == :awaiting_input
     # Check if the agent process is actually alive (not just state saying "running")
     process_alive = is_running && Ipa.Agent.Instance.alive?(assigns.agent.agent_id)
-    # Use streaming output for running agents, otherwise use persisted output from state
-    output = assigns.streaming_output || assigns.agent.output || ""
 
     assigns = assign(assigns, :process_alive, process_alive)
 
@@ -490,7 +488,6 @@ defmodule IpaWeb.Pod.AgentPanelLive do
       |> assign(:is_running, is_running)
       |> assign(:is_pending, is_pending)
       |> assign(:is_awaiting_input, is_awaiting_input)
-      |> assign(:output, output)
 
     ~H"""
     <div
@@ -602,45 +599,7 @@ defmodule IpaWeb.Pod.AgentPanelLive do
     <!-- Expanded content -->
         <%= if @expanded do %>
           <div class="mt-4 space-y-4">
-            <!-- Output panel -->
-            <div class="relative">
-              <div class="flex items-center justify-between mb-2">
-                <h4 class="font-medium text-sm flex items-center gap-2">
-                  Agent Output
-                  <%= if @is_running do %>
-                    <span class="badge badge-xs badge-info">Live</span>
-                  <% end %>
-                </h4>
-                <% char_count = String.length(@output) %>
-                <%= if char_count > 0 do %>
-                  <span class="text-xs text-base-content/40">{char_count} chars</span>
-                <% end %>
-              </div>
-              
-    <!-- Output content -->
-              <div
-                class="rounded-lg p-3 min-h-[120px] max-h-[300px] overflow-y-auto bg-neutral text-neutral-content/90"
-                id={"output-#{@agent.agent_id}"}
-                phx-hook="AutoScroll"
-              >
-                <%= if @output != "" do %>
-                  <div class="text-xs leading-relaxed whitespace-pre-wrap break-words">{@output}</div>
-                  <%= if @is_running do %>
-                    <span class="inline-block w-1.5 h-3 bg-info animate-pulse ml-0.5"></span>
-                  <% end %>
-                <% else %>
-                  <div class="text-xs text-neutral-content/50">
-                    <%= if @is_running do %>
-                      Waiting for agent output...
-                    <% else %>
-                      No output recorded
-                    <% end %>
-                  </div>
-                <% end %>
-              </div>
-            </div>
-            
-    <!-- Tool calls (compact view) -->
+            <!-- Tool calls (compact view) -->
             <% tool_calls = Map.get(@agent, :tool_calls, []) %>
             <%= if length(tool_calls) > 0 do %>
               <div>

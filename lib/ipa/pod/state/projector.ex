@@ -106,5 +106,6 @@ defmodule Ipa.Pod.State.Projector do
   defp agent_event?(%Ipa.Pod.Events.AgentMessageSent{}), do: true
   defp agent_event?(%Ipa.Pod.Events.AgentResponseReceived{}), do: true
   defp agent_event?(%Ipa.Pod.Events.AgentMarkedDone{}), do: true
+  defp agent_event?(%Ipa.Pod.Events.AgentStateSnapshot{}), do: true
   defp agent_event?(_), do: false
 end

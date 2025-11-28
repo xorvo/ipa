@@ -187,21 +187,38 @@ defmodule IpaWeb.Pod.AgentDetailLive do
 
     <!-- Conversation content -->
           <div
-            class="flex-1 p-4 overflow-y-auto bg-neutral text-neutral-content/90 font-mono"
+            class="flex-1 p-4 overflow-y-auto bg-[#0d1117] text-neutral-content/80 font-mono text-sm"
             id="agent-detail-conversation"
             phx-hook="AutoScroll"
           >
             <% conversation = @agent.conversation_history || [] %>
-            <div class="space-y-1">
+            <div class="space-y-2">
               <!-- Conversation history with interleaved responses -->
               <%= for {msg, idx} <- Enum.with_index(conversation) do %>
-                <.conversation_bubble
-                  role={msg.role || :user}
-                  content={msg.content}
-                  label={get_message_label(msg)}
-                  timestamp={Map.get(msg, :timestamp)}
-                  batch_id={Map.get(msg, :batch_id)}
-                />
+                <%= case msg.role do %>
+                  <% :tool_call -> %>
+                    <.tool_call_entry
+                      name={msg.name}
+                      args={msg.args}
+                      idx={idx}
+                      editor={@editor}
+                    />
+                  <% :tool_result -> %>
+                    <.tool_result_entry
+                      name={msg.name}
+                      result={msg.result}
+                      idx={idx}
+                      editor={@editor}
+                    />
+                  <% _ -> %>
+                    <.conversation_bubble
+                      role={msg.role || :user}
+                      content={msg.content}
+                      label={get_message_label(msg)}
+                      idx={idx}
+                      batch_id={Map.get(msg, :batch_id)}
+                    />
+                <% end %>
 
     <!-- Show streaming agent response after the last message -->
                 <%= if idx == length(conversation) - 1 && @streaming_output != "" do %>
@@ -209,6 +226,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
                     role={:assistant}
                     content={@streaming_output}
                     label="Agent"
+                    idx={"streaming-#{idx}"}
                     is_streaming={Ipa.Agent.Instance.alive?(@agent.agent_id)}
                   />
                 <% end %>
@@ -220,6 +238,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
                   role={:assistant}
                   content={@streaming_output}
                   label="Agent"
+                  idx="streaming-only"
                   is_streaming={Ipa.Agent.Instance.alive?(@agent.agent_id)}
                 />
               <% end %>
@@ -756,7 +775,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
   defp conversation_bubble(assigns) do
     assigns =
       assigns
-      |> Map.put_new(:timestamp, nil)
+      |> Map.put_new(:idx, nil)
       |> Map.put_new(:batch_id, nil)
       |> Map.put_new(:is_streaming, false)
 
@@ -764,32 +783,206 @@ defmodule IpaWeb.Pod.AgentDetailLive do
     <div class={message_container_class(@role)}>
       <%= if is_user_message?(@role) do %>
         <!-- User message - highlighted with border -->
-        <div class="pl-3 border-l-2 border-primary">
-          <div class="flex items-center gap-2 mb-1">
-            <span class="text-xs font-medium text-primary">{@label}</span>
-            <%= if @timestamp do %>
-              <span class="text-xs text-neutral-content/50">{format_timestamp(@timestamp)}</span>
-            <% end %>
+        <div class="pl-2 border-l border-primary/50">
+          <div class="flex items-center gap-2 mb-0.5">
+            <span class="text-[11px] font-normal text-primary/70">{@label}</span>
             <%= if @batch_id do %>
               <span class="badge badge-xs badge-ghost">batch</span>
             <% end %>
           </div>
-          <div class="text-sm whitespace-pre-wrap break-words text-neutral-content">{@content}</div>
+          <div class="text-xs font-light whitespace-pre-wrap break-words text-neutral-content/80">{@content}</div>
         </div>
       <% else %>
-        <!-- System/Assistant message - plain text stream -->
-        <div class={if @role == :system, do: "text-neutral-content/60 text-xs", else: ""}>
+        <!-- System/Assistant message - render as markdown -->
+        <div class={if @role == :system, do: "text-neutral-content/50 text-[11px]", else: ""}>
           <%= if @role == :system do %>
-            <div class="flex items-center gap-2 mb-1">
-              <span class="text-xs text-neutral-content/40">{@label}</span>
+            <div class="flex items-center gap-2 mb-0.5">
+              <span class="text-[10px] text-neutral-content/30">{@label}</span>
             </div>
+            <div class="text-[11px] font-light whitespace-pre-wrap font-mono text-neutral-content/60">{@content}</div>
+          <% else %>
+            <div
+              id={"markdown-#{@idx || :erlang.phash2(@content)}"}
+              class="prose prose-sm prose-invert max-w-none text-neutral-content/70 markdown-content font-light"
+              phx-hook="Markdown"
+              data-content={@content}
+            ><%= if @is_streaming do %><span class="inline-block w-1.5 h-4 bg-info animate-pulse ml-0.5 align-middle"></span><% end %></div>
           <% end %>
-          <div class="text-xs whitespace-pre-wrap font-mono text-neutral-content">{@content}<%= if @is_streaming do %><span class="inline-block w-1.5 h-4 bg-info animate-pulse ml-0.5 align-middle"></span><% end %></div>
         </div>
       <% end %>
     </div>
     """
   end
+
+  # Tool call entry - collapsible with special handling for Edit tool
+  defp tool_call_entry(assigns) do
+    assigns = Map.put_new(assigns, :editor, nil)
+    tool_glyph = get_tool_glyph(assigns.name)
+    is_edit_tool = assigns.name in ["Edit", "MultiEdit"]
+    file_path = get_file_path_from_args(assigns.args)
+
+    assigns =
+      assigns
+      |> Map.put(:tool_glyph, tool_glyph)
+      |> Map.put(:is_edit_tool, is_edit_tool)
+      |> Map.put(:file_path, file_path)
+
+    ~H"""
+    <div class="group" phx-hook="Collapsible" id={"tool-call-#{@idx}"}>
+      <div class="flex items-center gap-1.5 cursor-pointer select-none py-0.5 px-1 -mx-1 rounded hover:bg-neutral-600 transition-colors" data-collapse-toggle>
+        <span class="text-neutral-content/40 text-xs">{@tool_glyph}</span>
+        <span class="text-[11px] font-normal text-neutral-content/50">{@name}</span>
+        <%= if @file_path do %>
+          <%= if @editor do %>
+            <button
+              phx-click="open_in_editor"
+              phx-value-path={@file_path}
+              class="text-[11px] text-neutral-content/40 hover:text-neutral-content/60 hover:underline font-mono"
+              title={"Open in #{@editor}"}
+            >
+              {truncate_path(@file_path)}
+            </button>
+          <% else %>
+            <span class="text-[11px] text-neutral-content/40 font-mono">{truncate_path(@file_path)}</span>
+          <% end %>
+        <% end %>
+        <span class="flex-1"></span>
+        <span class="text-neutral-content/30 opacity-0 group-hover:opacity-100 transition-all duration-200 text-xs" data-collapse-icon-wrapper>›</span>
+      </div>
+      <div class="mt-1 ml-4" data-collapse-content>
+        <%= if @is_edit_tool do %>
+          <.edit_tool_detail args={@args} />
+        <% else %>
+          <pre class="text-[10px] bg-black/30 rounded p-2 overflow-x-auto max-h-60 text-neutral-content/60"><code>{format_args(@args)}</code></pre>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  # Tool result entry - collapsible
+  defp tool_result_entry(assigns) do
+    assigns = Map.put_new(assigns, :editor, nil)
+    is_success = !is_error_result?(assigns.result)
+
+    assigns =
+      assigns
+      |> Map.put(:is_success, is_success)
+
+    ~H"""
+    <div class="group" phx-hook="Collapsible" id={"tool-result-#{@idx}"}>
+      <div class="flex items-center gap-1.5 cursor-pointer select-none py-0.5 px-1 -mx-1 rounded hover:bg-white/5 transition-colors" data-collapse-toggle>
+        <%= if @is_success do %>
+          <span class="text-success/60 text-xs">✓</span>
+        <% else %>
+          <span class="text-error/60 text-xs">✗</span>
+        <% end %>
+        <span class={"text-[11px] font-normal #{if @is_success, do: "text-neutral-content/40", else: "text-error/60"}"}>{@name} result</span>
+        <span class="flex-1"></span>
+        <span class="text-neutral-content/30 opacity-0 group-hover:opacity-100 transition-all duration-200 text-xs" data-collapse-icon-wrapper>›</span>
+      </div>
+      <div class="mt-1 ml-4" data-collapse-content>
+        <pre class="text-[10px] bg-black/30 rounded p-2 overflow-x-auto max-h-60 whitespace-pre-wrap text-neutral-content/60"><code>{truncate_result(@result)}</code></pre>
+      </div>
+    </div>
+    """
+  end
+
+  # Edit tool detail with diff view - renders inline diff without JS hook
+  defp edit_tool_detail(assigns) do
+    old_string = get_in(assigns.args, ["old_string"]) || assigns.args[:old_string] || ""
+    new_string = get_in(assigns.args, ["new_string"]) || assigns.args[:new_string] || ""
+    file_path = get_in(assigns.args, ["file_path"]) || assigns.args[:file_path] || "file"
+
+    # Compute unified diff lines
+    diff_lines = compute_unified_diff(old_string, new_string)
+
+    assigns =
+      assigns
+      |> Map.put(:old_string, old_string)
+      |> Map.put(:new_string, new_string)
+      |> Map.put(:file_path, file_path)
+      |> Map.put(:diff_lines, diff_lines)
+
+    ~H"""
+    <div class="diff-view">
+      <%= if @old_string != "" || @new_string != "" do %>
+        <div class="rounded border border-neutral-content/10 overflow-hidden text-xs font-mono bg-[#0d1117]">
+          <%= for {type, content} <- @diff_lines do %>
+            <div class={diff_line_class(type)}>
+              <span class={diff_gutter_class(type)}>{diff_symbol(type)}</span>
+              <pre class="flex-1 px-2 py-px overflow-x-auto">{content}</pre>
+            </div>
+          <% end %>
+        </div>
+      <% else %>
+        <div class="text-xs text-neutral-content/40 italic">No changes</div>
+      <% end %>
+    </div>
+    """
+  end
+
+  # Compute a simple unified diff showing removed/added lines in sequence
+  defp compute_unified_diff(old_string, new_string) do
+    old_lines = String.split(old_string, "\n")
+    new_lines = String.split(new_string, "\n")
+
+    # Simple diff: find common prefix/suffix, show changes in middle
+    {common_prefix, old_rest, new_rest} = find_common_prefix(old_lines, new_lines)
+    {common_suffix, old_changed, new_changed} = find_common_suffix(old_rest, new_rest)
+
+    prefix_lines = Enum.map(common_prefix, &{:context, &1})
+    removed_lines = Enum.map(old_changed, &{:removed, &1})
+    added_lines = Enum.map(new_changed, &{:added, &1})
+    suffix_lines = Enum.map(common_suffix, &{:context, &1})
+
+    # Interleave removed and added for better visual comparison
+    changed_lines = interleave_changes(removed_lines, added_lines)
+
+    prefix_lines ++ changed_lines ++ suffix_lines
+  end
+
+  defp find_common_prefix([], new_lines), do: {[], [], new_lines}
+  defp find_common_prefix(old_lines, []), do: {[], old_lines, []}
+  defp find_common_prefix([h | old_rest], [h | new_rest]) do
+    {prefix, old_remaining, new_remaining} = find_common_prefix(old_rest, new_rest)
+    {[h | prefix], old_remaining, new_remaining}
+  end
+  defp find_common_prefix(old_lines, new_lines), do: {[], old_lines, new_lines}
+
+  defp find_common_suffix(old_lines, new_lines) do
+    old_rev = Enum.reverse(old_lines)
+    new_rev = Enum.reverse(new_lines)
+    {suffix_rev, old_rest_rev, new_rest_rev} = find_common_prefix(old_rev, new_rev)
+    {Enum.reverse(suffix_rev), Enum.reverse(old_rest_rev), Enum.reverse(new_rest_rev)}
+  end
+
+  # Interleave removed and added lines for better visual comparison
+  defp interleave_changes(removed, added) do
+    max_len = max(length(removed), length(added))
+    removed_padded = removed ++ List.duplicate(nil, max_len - length(removed))
+    added_padded = added ++ List.duplicate(nil, max_len - length(added))
+
+    Enum.zip(removed_padded, added_padded)
+    |> Enum.flat_map(fn
+      {nil, nil} -> []
+      {nil, add} -> [add]
+      {rem, nil} -> [rem]
+      {rem, add} -> [rem, add]
+    end)
+  end
+
+  defp diff_line_class(:context), do: "flex text-[#c9d1d9] bg-transparent"
+  defp diff_line_class(:removed), do: "flex bg-[#3c1f1f] text-[#f98181]"
+  defp diff_line_class(:added), do: "flex bg-[#1f3c2a] text-[#7ee787]"
+
+  defp diff_gutter_class(:context), do: "w-5 text-center text-[#484f58] bg-[#161b22] select-none shrink-0"
+  defp diff_gutter_class(:removed), do: "w-5 text-center text-[#f98181] bg-[#4d2020] select-none shrink-0"
+  defp diff_gutter_class(:added), do: "w-5 text-center text-[#7ee787] bg-[#1a4d2a] select-none shrink-0"
+
+  defp diff_symbol(:context), do: " "
+  defp diff_symbol(:removed), do: "-"
+  defp diff_symbol(:added), do: "+"
 
   defp message_container_class(:user), do: "py-2"
   defp message_container_class(:system), do: "py-1 opacity-70"
@@ -799,16 +992,52 @@ defmodule IpaWeb.Pod.AgentDetailLive do
   defp is_user_message?("user"), do: true
   defp is_user_message?(_), do: false
 
-  defp format_timestamp(nil), do: ""
+  # Tool helpers - returns Unicode glyph for tool type
+  defp get_tool_glyph("Read"), do: "📄"
+  defp get_tool_glyph("Edit"), do: "✎"
+  defp get_tool_glyph("MultiEdit"), do: "✎"
+  defp get_tool_glyph("Write"), do: "📝"
+  defp get_tool_glyph("Bash"), do: "⌘"
+  defp get_tool_glyph("Glob"), do: "📂"
+  defp get_tool_glyph("Grep"), do: "🔍"
+  defp get_tool_glyph("Task"), do: "📋"
+  defp get_tool_glyph("WebFetch"), do: "🌐"
+  defp get_tool_glyph("TodoWrite"), do: "☰"
+  defp get_tool_glyph(_), do: "⚙"
 
-  defp format_timestamp(unix) when is_integer(unix) do
-    case DateTime.from_unix(unix) do
-      {:ok, dt} -> Calendar.strftime(dt, "%H:%M:%S")
-      _ -> ""
+  defp get_file_path_from_args(args) when is_map(args) do
+    get_in(args, ["file_path"]) || args[:file_path] || get_in(args, ["path"]) || args[:path]
+  end
+  defp get_file_path_from_args(_), do: nil
+
+  defp truncate_path(nil), do: ""
+  defp truncate_path(path) when is_binary(path) do
+    if String.length(path) > 50 do
+      "..." <> String.slice(path, -47, 47)
+    else
+      path
     end
   end
 
-  defp format_timestamp(_), do: ""
+  defp format_args(args) when is_map(args) do
+    inspect(args, pretty: true, limit: 1000, width: 80)
+  end
+  defp format_args(args), do: inspect(args)
+
+  defp is_error_result?(result) when is_binary(result) do
+    String.contains?(String.downcase(result), ["error", "failed", "exception"])
+  end
+  defp is_error_result?(_), do: false
+
+  defp truncate_result(nil), do: "(no output)"
+  defp truncate_result(result) when is_binary(result) do
+    if String.length(result) > 2000 do
+      String.slice(result, 0, 2000) <> "\n... (truncated)"
+    else
+      result
+    end
+  end
+  defp truncate_result(result), do: inspect(result, limit: 500, pretty: true)
 
   # ============================================================================
   # Helpers
@@ -963,7 +1192,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
   end
 
   # Convert unified conversation history to UI format
-  # The new format has :type instead of :role, so we convert for display
+  # Preserve tool_call and tool_result types for specialized rendering
   defp convert_to_ui_format(history) when is_list(history) do
     Enum.map(history, fn entry ->
       type = entry[:type] || entry["type"]
@@ -979,18 +1208,22 @@ defmodule IpaWeb.Pod.AgentDetailLive do
           %{role: :assistant, content: entry[:content] || entry["content"], timestamp: entry[:timestamp] || entry["timestamp"]}
 
         t when t in [:tool_call, "tool_call"] ->
-          # Display tool calls as assistant messages
-          tool_name = entry[:name] || entry["name"]
-          args = entry[:args] || entry["args"] || %{}
-          content = "🔧 Using tool: #{tool_name}\nArgs: #{inspect(args, pretty: true, limit: 500)}"
-          %{role: :assistant, content: content, timestamp: entry[:timestamp] || entry["timestamp"]}
+          # Preserve tool call structure for specialized rendering
+          %{
+            role: :tool_call,
+            name: entry[:name] || entry["name"],
+            args: entry[:args] || entry["args"] || %{},
+            timestamp: entry[:timestamp] || entry["timestamp"]
+          }
 
         t when t in [:tool_result, "tool_result"] ->
-          # Display tool results as assistant messages
-          tool_name = entry[:name] || entry["name"]
-          result = entry[:result] || entry["result"]
-          content = "✓ Tool #{tool_name} complete\nResult: #{truncate_for_display(result)}"
-          %{role: :assistant, content: content, timestamp: entry[:timestamp] || entry["timestamp"]}
+          # Preserve tool result structure for specialized rendering
+          %{
+            role: :tool_result,
+            name: entry[:name] || entry["name"],
+            result: entry[:result] || entry["result"],
+            timestamp: entry[:timestamp] || entry["timestamp"]
+          }
 
         _ ->
           # Old format with :role key - pass through
@@ -1000,14 +1233,4 @@ defmodule IpaWeb.Pod.AgentDetailLive do
   end
 
   defp convert_to_ui_format(nil), do: []
-
-  defp truncate_for_display(nil), do: "(no output)"
-  defp truncate_for_display(result) when is_binary(result) do
-    if String.length(result) > 500 do
-      String.slice(result, 0, 500) <> "..."
-    else
-      result
-    end
-  end
-  defp truncate_for_display(result), do: inspect(result, limit: 500)
 end
