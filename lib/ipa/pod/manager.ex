@@ -214,6 +214,33 @@ defmodule Ipa.Pod.Manager do
     end
   end
 
+  @doc """
+  Spawns a planning agent.
+
+  This creates the workspace, starts the agent, and records the appropriate events
+  so the agent appears in the Agents tab with live progress.
+
+  Supports both initial plan creation and iterative refinement:
+  - First run: creates plan from spec
+  - Subsequent runs: refines plan based on user feedback
+
+  ## Parameters
+    - `task_id` - Task UUID
+    - `input_content` - User's planning requirements or refinement feedback
+
+  ## Returns
+    - `{:ok, agent_id}` - Agent started successfully
+    - `{:error, reason}` - Failed to start agent
+  """
+  @spec spawn_planning_agent(String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def spawn_planning_agent(task_id, input_content) do
+    case GenServer.whereis(via_tuple(task_id)) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:spawn_planning_agent, input_content})
+    end
+  end
+
   # ============================================================================
   # GenServer Callbacks
   # ============================================================================
@@ -412,6 +439,36 @@ defmodule Ipa.Pod.Manager do
           {:reply, {:error, :generation_in_progress}, state}
         else
           case spawn_spec_generator_impl(state, input_content) do
+            {:ok, agent_id, new_state} ->
+              {:reply, {:ok, agent_id}, new_state}
+
+            {:error, reason} ->
+              {:reply, {:error, reason}, state}
+          end
+        end
+      end
+    end
+  end
+
+  def handle_call({:spawn_planning_agent, input_content}, _from, state) do
+    # Check if plan is already approved
+    if State.plan_approved?(state) do
+      {:reply, {:error, :plan_already_approved}, state}
+    else
+      # Check if we're in the right phase
+      if state.phase != :planning do
+        {:reply, {:error, :invalid_phase}, state}
+      else
+        # Check if there's already a planning agent running
+        has_running_planning =
+          Enum.any?(state.agents, fn a ->
+            a.agent_type in [:planning, :planning_agent] and a.status == :running
+          end)
+
+        if has_running_planning do
+          {:reply, {:error, :generation_in_progress}, state}
+        else
+          case spawn_planning_agent_impl(state, input_content) do
             {:ok, agent_id, new_state} ->
               {:reply, {:ok, agent_id}, new_state}
 
@@ -860,6 +917,67 @@ defmodule Ipa.Pod.Manager do
         temp_path = Path.join([System.tmp_dir!(), "ipa", "spec-generator", task_id])
         File.mkdir_p!(temp_path)
         temp_path
+    end
+  end
+
+  # Implementation for spawning planning agent
+  defp spawn_planning_agent_impl(state, input_content) do
+    # Create workspace for the planning agent
+    workspace_path = create_planning_workspace(state.task_id)
+
+    # Get unresolved review threads for the plan
+    review_threads = get_unresolved_threads(state, :plan)
+
+    # Get current plan data for iteration
+    current_plan = state.plan
+
+    # Build context for the planning agent
+    agent_context = %{
+      task_id: state.task_id,
+      workspace: workspace_path,
+      user_input: input_content,
+      current_plan: current_plan,
+      review_threads: review_threads,
+      task: %{
+        task_id: state.task_id,
+        title: state.title,
+        spec: state.spec
+      }
+    }
+
+    Logger.info("Spawning planning agent",
+      task_id: state.task_id,
+      workspace: workspace_path,
+      has_current_plan: current_plan != nil
+    )
+
+    # Start the agent process
+    case Ipa.Agent.Supervisor.start_agent(state.task_id, Ipa.Agent.Types.Planning, agent_context) do
+      {:ok, agent_id} ->
+        # Record the agent_started event with document context
+        case AgentCommands.start_agent(state, %{
+               agent_id: agent_id,
+               agent_type: :planning_agent,
+               workspace_path: workspace_path,
+               context: %{document_type: :plan}
+             }) do
+          {:ok, events} ->
+            case persist_and_apply_events(state, events) do
+              {:ok, new_state} ->
+                broadcast_state_update(new_state)
+                {:ok, agent_id, new_state}
+
+              {:error, reason} ->
+                {:error, reason}
+            end
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        Logger.error("Failed to start planning agent: #{inspect(reason)}")
+        {:error, reason}
     end
   end
 

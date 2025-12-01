@@ -49,6 +49,7 @@ defmodule IpaWeb.Pod.TaskLive do
           |> assign(message_input: "")
           |> assign(editing_spec: false)
           |> assign(spec_description: get_spec_content(state.spec))
+          |> assign(spec_expanded: false)
           |> assign(events: Enum.reverse(events))
           |> assign(event_filter: "all")
           |> assign(selected_event: nil)
@@ -323,6 +324,10 @@ defmodule IpaWeb.Pod.TaskLive do
 
   def handle_event("cancel_spec_edit", _params, socket) do
     {:noreply, assign(socket, editing_spec: false)}
+  end
+
+  def handle_event("toggle_spec_expanded", _params, socket) do
+    {:noreply, assign(socket, spec_expanded: !socket.assigns.spec_expanded)}
   end
 
   def handle_event("update_spec_description", params, socket) do
@@ -645,6 +650,7 @@ defmodule IpaWeb.Pod.TaskLive do
               task_id={@task_id}
               editing_spec={@editing_spec}
               spec_description={@spec_description}
+              spec_expanded={@spec_expanded}
             />
           <% :workstreams -> %>
             <.workstreams_tab state={@state} selected_id={@selected_workstream_id} />
@@ -842,7 +848,55 @@ defmodule IpaWeb.Pod.TaskLive do
       <% end %>
 
       <!-- Spec Section -->
-      <.card title="Specification">
+      <% spec_agent = get_running_agent(@state.agents, :spec_generator) %>
+      <.card title="Specification" loading={spec_agent != nil} loading_text="Generating...">
+        <:header_actions>
+          <%= if @state.spec && !@editing_spec do %>
+            <% is_approved = @state.spec[:approved?] || @state.spec["approved?"] %>
+            <%= if !is_approved do %>
+              <button
+                phx-click="approve_spec"
+                class="btn btn-sm btn-success gap-1"
+                title="Approve Specification"
+              >
+                <.icon name="hero-check" class="w-4 h-4" />
+                <span class="hidden sm:inline">Approve</span>
+              </button>
+              <button
+                phx-click="edit_spec"
+                class="btn btn-sm btn-ghost gap-1"
+                title="Edit Specification"
+              >
+                <.icon name="hero-pencil-square" class="w-4 h-4" />
+                <span class="hidden sm:inline">Edit</span>
+              </button>
+            <% end %>
+            <a
+              href={~p"/pods/#{@task_id}/review/spec"}
+              class="btn btn-sm btn-ghost gap-1"
+              title="Review with Agent"
+            >
+              <.icon name="hero-chat-bubble-left-right" class="w-4 h-4" />
+              <span class="hidden sm:inline">Review</span>
+            </a>
+            <% spec_content = get_spec_content(@state.spec) %>
+            <%= if spec_content && spec_content != "" do %>
+              <button
+                phx-click="toggle_spec_expanded"
+                class="btn btn-sm btn-ghost gap-1"
+                title={if @spec_expanded, do: "Collapse", else: "Expand"}
+              >
+                <%= if @spec_expanded do %>
+                  <.icon name="hero-arrows-pointing-in" class="w-4 h-4" />
+                  <span class="hidden sm:inline">Collapse</span>
+                <% else %>
+                  <.icon name="hero-arrows-pointing-out" class="w-4 h-4" />
+                  <span class="hidden sm:inline">Expand</span>
+                <% end %>
+              </button>
+            <% end %>
+          <% end %>
+        </:header_actions>
         <%= if @editing_spec do %>
           <!-- Edit Mode -->
           <form phx-submit="save_spec" class="space-y-4">
@@ -859,11 +913,11 @@ defmodule IpaWeb.Pod.TaskLive do
               ><%= @spec_description %></textarea>
             </div>
             <div class="flex gap-2">
-              <button type="submit" class="btn btn-primary btn-sm">
-                Save Spec
+              <button type="submit" class="btn btn-primary btn-sm gap-1">
+                <.icon name="hero-check" class="w-4 h-4" /> Save
               </button>
-              <button type="button" phx-click="cancel_spec_edit" class="btn btn-ghost btn-sm">
-                Cancel
+              <button type="button" phx-click="cancel_spec_edit" class="btn btn-ghost btn-sm gap-1">
+                <.icon name="hero-x-mark" class="w-4 h-4" /> Cancel
               </button>
             </div>
           </form>
@@ -872,7 +926,10 @@ defmodule IpaWeb.Pod.TaskLive do
           <%= if @state.spec do %>
             <% spec_content = get_spec_content(@state.spec) %>
             <%= if spec_content && spec_content != "" do %>
-              <div class="max-h-80 overflow-y-auto border border-base-300 rounded-lg p-4 bg-base-200/30">
+              <div class={[
+                "border border-base-300 rounded-lg p-4 bg-base-200/30 overflow-y-auto transition-all",
+                if(@spec_expanded, do: "max-h-none", else: "max-h-80")
+              ]}>
                 <div
                   id="spec-markdown-preview"
                   class="spec-content"
@@ -883,39 +940,17 @@ defmodule IpaWeb.Pod.TaskLive do
             <% else %>
               <p class="text-base-content/60">No description</p>
             <% end %>
-            <%= if !(@state.spec[:approved?] || @state.spec["approved?"]) do %>
-              <div class="mt-4 flex gap-2">
-                <button phx-click="edit_spec" class="btn btn-outline btn-sm">
-                  Edit Spec
-                </button>
-                <button phx-click="approve_spec" class="btn btn-primary btn-sm">
-                  Approve Spec
-                </button>
-                <a
-                  href={~p"/pods/#{@task_id}/review/spec"}
-                  class="btn btn-ghost btn-sm gap-1"
-                >
-                  <.icon name="hero-chat-bubble-left-right" class="w-4 h-4" /> Review
-                </a>
-              </div>
-            <% else %>
-              <div class="mt-4 flex items-center justify-between">
-                <div class="text-success flex items-center gap-2">
-                  <.icon name="hero-check-circle" class="w-5 h-5" /> Spec Approved
-                </div>
-                <a
-                  href={~p"/pods/#{@task_id}/review/spec"}
-                  class="btn btn-ghost btn-sm gap-1"
-                >
-                  <.icon name="hero-chat-bubble-left-right" class="w-4 h-4" /> Review
-                </a>
+            <%= if @state.spec[:approved?] || @state.spec["approved?"] do %>
+              <div class="mt-4 flex items-center gap-2 text-success">
+                <.icon name="hero-check-circle" class="w-5 h-5" />
+                <span>Spec Approved</span>
               </div>
             <% end %>
           <% else %>
             <p class="text-base-content/60">No specification yet.</p>
             <div class="mt-4">
-              <button phx-click="edit_spec" class="btn btn-outline btn-sm">
-                Add Specification
+              <button phx-click="edit_spec" class="btn btn-outline btn-sm gap-1">
+                <.icon name="hero-plus" class="w-4 h-4" /> Add Specification
               </button>
             </div>
           <% end %>
@@ -923,7 +958,31 @@ defmodule IpaWeb.Pod.TaskLive do
       </.card>
       
     <!-- Plan Section -->
-      <.card title="Plan">
+      <% planning_agent = get_running_agent(@state.agents, :planning) %>
+      <.card title="Plan" loading={planning_agent != nil} loading_text="Planning...">
+        <:header_actions>
+          <%= if @state.plan do %>
+            <% is_plan_approved = @state.plan[:approved?] || @state.plan["approved?"] %>
+            <%= if !is_plan_approved do %>
+              <button
+                phx-click="approve_plan"
+                class="btn btn-sm btn-success gap-1"
+                title="Approve Plan"
+              >
+                <.icon name="hero-check" class="w-4 h-4" />
+                <span class="hidden sm:inline">Approve</span>
+              </button>
+            <% end %>
+            <a
+              href={~p"/pods/#{@task_id}/review/plan"}
+              class="btn btn-sm btn-ghost gap-1"
+              title="Review with Agent"
+            >
+              <.icon name="hero-chat-bubble-left-right" class="w-4 h-4" />
+              <span class="hidden sm:inline">Review</span>
+            </a>
+          <% end %>
+        </:header_actions>
         <%= if @state.plan do %>
           <!-- Display workstreams from planning agent -->
           <% plan_workstreams = @state.plan[:workstreams] || @state.plan["workstreams"] %>
@@ -972,29 +1031,10 @@ defmodule IpaWeb.Pod.TaskLive do
               <li :for={step <- List.wrap(plan_steps)} class="text-base-content">{format_step(step)}</li>
             </ol>
           </div>
-          <%= if !(@state.plan[:approved?] || @state.plan["approved?"]) do %>
-            <div class="mt-4 flex gap-2">
-              <button phx-click="approve_plan" class="btn btn-primary btn-sm">
-                Approve Plan
-              </button>
-              <a
-                href={~p"/pods/#{@task_id}/review/plan"}
-                class="btn btn-ghost btn-sm gap-1"
-              >
-                <.icon name="hero-chat-bubble-left-right" class="w-4 h-4" /> Review
-              </a>
-            </div>
-          <% else %>
-            <div class="mt-4 flex items-center justify-between">
-              <div class="text-success flex items-center gap-2">
-                <.icon name="hero-check-circle" class="w-5 h-5" /> Plan Approved
-              </div>
-              <a
-                href={~p"/pods/#{@task_id}/review/plan"}
-                class="btn btn-ghost btn-sm gap-1"
-              >
-                <.icon name="hero-chat-bubble-left-right" class="w-4 h-4" /> Review
-              </a>
+          <%= if @state.plan[:approved?] || @state.plan["approved?"] do %>
+            <div class="mt-4 flex items-center gap-2 text-success">
+              <.icon name="hero-check-circle" class="w-5 h-5" />
+              <span>Plan Approved</span>
             </div>
           <% end %>
         <% else %>
@@ -1745,12 +1785,36 @@ defmodule IpaWeb.Pod.TaskLive do
   end
 
   # Generic Card Component
+  attr :title, :string, default: nil
+  attr :actions, :list, default: []
+  attr :loading, :boolean, default: false
+  attr :loading_text, :string, default: "Loading..."
+  slot :inner_block, required: true
+  slot :header_actions
+
   defp card(assigns) do
     ~H"""
     <div class="card bg-base-100 shadow-sm border border-base-300">
       <div class="card-body">
-        <%= if assigns[:title] do %>
-          <h2 class="card-title text-lg">{@title}</h2>
+        <%= if assigns[:title] || assigns[:header_actions] do %>
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center gap-3">
+              <%= if @title do %>
+                <h2 class="card-title text-lg">{@title}</h2>
+              <% end %>
+              <%= if @loading do %>
+                <div class="flex items-center gap-2 text-info">
+                  <span class="loading loading-spinner loading-sm"></span>
+                  <span class="text-sm font-medium">{@loading_text}</span>
+                </div>
+              <% end %>
+            </div>
+            <%= if assigns[:header_actions] != [] do %>
+              <div class="flex items-center gap-2">
+                {render_slot(@header_actions)}
+              </div>
+            <% end %>
+          </div>
         <% end %>
         {render_slot(@inner_block)}
       </div>
@@ -1867,6 +1931,15 @@ defmodule IpaWeb.Pod.TaskLive do
 
   defp agent_count(%{agents: agents}) when is_list(agents), do: length(agents)
   defp agent_count(_state), do: 0
+
+  # Get a running agent of a specific type
+  defp get_running_agent(agents, agent_type) when is_list(agents) do
+    Enum.find(agents, fn agent ->
+      agent.agent_type == agent_type && agent.status == :running
+    end)
+  end
+
+  defp get_running_agent(_, _), do: nil
 
   defp unread_count(%{notifications: notifications}) when is_list(notifications) do
     Enum.count(notifications, fn n -> !n.read? end)

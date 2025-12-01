@@ -34,6 +34,8 @@ defmodule IpaWeb.Pod.AgentDetailLive do
       |> assign(batch_messages: [])
       |> assign(batch_mode: false)
       |> assign(editor: editor)
+      |> assign(todo_items: [])
+      |> assign(todos_collapsed: false)
 
     if connected?(socket) && task_id && agent_id do
       Logger.info("AgentDetailLive mounted for agent #{agent_id}, pid=#{inspect(self())}")
@@ -259,6 +261,11 @@ defmodule IpaWeb.Pod.AgentDetailLive do
             </div>
           </div>
         </div>
+
+    <!-- Pinned Todo List (when TodoWrite has been called) -->
+        <%= if length(@todo_items) > 0 do %>
+          <.pinned_todo_list items={@todo_items} agent_status={@agent.status} collapsed={@todos_collapsed} />
+        <% end %>
 
     <!-- Error banner if failed -->
         <%= if @agent.error do %>
@@ -535,6 +542,10 @@ defmodule IpaWeb.Pod.AgentDetailLive do
 
   def handle_event("toggle_batch_mode", _params, socket) do
     {:noreply, assign(socket, batch_mode: !socket.assigns.batch_mode)}
+  end
+
+  def handle_event("toggle_todos_collapsed", _params, socket) do
+    {:noreply, assign(socket, todos_collapsed: !socket.assigns.todos_collapsed)}
   end
 
   def handle_event("add_to_batch", %{"message" => message}, socket) do
@@ -984,6 +995,90 @@ defmodule IpaWeb.Pod.AgentDetailLive do
   defp diff_symbol(:removed), do: "-"
   defp diff_symbol(:added), do: "+"
 
+  # Pinned todo list component - shows current task progress
+  attr :items, :list, required: true
+  attr :agent_status, :atom, required: true
+  attr :collapsed, :boolean, default: false
+
+  defp pinned_todo_list(assigns) do
+    completed_count = Enum.count(assigns.items, fn item -> item.status == :completed end)
+    total_count = length(assigns.items)
+    in_progress = Enum.find(assigns.items, fn item -> item.status == :in_progress end)
+
+    assigns =
+      assigns
+      |> Map.put(:completed_count, completed_count)
+      |> Map.put(:total_count, total_count)
+      |> Map.put(:in_progress, in_progress)
+
+    ~H"""
+    <div class="border-t border-base-300 bg-[#161b22] px-4 py-2">
+      <!-- Clickable Header with progress -->
+      <div
+        class="flex items-center justify-between cursor-pointer select-none hover:bg-white/5 -mx-4 px-4 py-1 rounded transition-colors"
+        phx-click="toggle_todos_collapsed"
+      >
+        <div class="flex items-center gap-2">
+          <span class={["text-neutral-content/40 text-xs transition-transform", !@collapsed && "rotate-90"]}>›</span>
+          <span class="text-neutral-content/60 text-xs">☰</span>
+          <span class="text-xs font-medium text-neutral-content/80">Tasks</span>
+          <span class="text-xs text-neutral-content/50">{@completed_count}/{@total_count}</span>
+          <!-- Show current task inline when collapsed -->
+          <%= if @collapsed && @in_progress do %>
+            <span class="text-xs text-info/70 truncate max-w-48">— {@in_progress.active_form || @in_progress.content}</span>
+          <% end %>
+        </div>
+        <!-- Progress bar -->
+        <div class="flex items-center gap-2">
+          <div class="w-24 h-1.5 bg-neutral-content/10 rounded-full overflow-hidden">
+            <div
+              class="h-full bg-success transition-all duration-300"
+              style={"width: #{if @total_count > 0, do: @completed_count / @total_count * 100, else: 0}%"}
+            ></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Collapsible content -->
+      <%= unless @collapsed do %>
+        <div class="mt-2">
+          <!-- Current task (in progress) -->
+          <%= if @in_progress do %>
+            <div class="flex items-center gap-2 py-1 px-2 rounded bg-info/10 border border-info/20 mb-2">
+              <span class="loading loading-spinner loading-xs text-info"></span>
+              <span class="text-xs text-info/90 truncate flex-1">{@in_progress.active_form || @in_progress.content}</span>
+            </div>
+          <% end %>
+
+          <!-- Todo items list -->
+          <div class="space-y-1 max-h-32 overflow-y-auto">
+            <%= for item <- @items do %>
+              <div class={[
+                "flex items-center gap-2 py-0.5 text-xs",
+                item.status == :completed && "text-neutral-content/40",
+                item.status == :in_progress && "text-info/80",
+                item.status == :pending && "text-neutral-content/60"
+              ]}>
+                <span class="w-4 flex-shrink-0 text-center">
+                  <%= case item.status do %>
+                    <% :completed -> %>
+                      <span class="text-success">✓</span>
+                    <% :in_progress -> %>
+                      <span class="text-info">›</span>
+                    <% :pending -> %>
+                      <span class="text-neutral-content/30">○</span>
+                  <% end %>
+                </span>
+                <span class={["truncate flex-1", item.status == :completed && "line-through"]}>{item.content}</span>
+              </div>
+            <% end %>
+          </div>
+        </div>
+      <% end %>
+    </div>
+    """
+  end
+
   defp message_container_class(:user), do: "py-2"
   defp message_container_class(:system), do: "py-1 opacity-70"
   defp message_container_class(_), do: "py-1"
@@ -1179,16 +1274,21 @@ defmodule IpaWeb.Pod.AgentDetailLive do
         ""
       end
 
+    # Extract todo items from conversation history
+    todo_items = extract_todo_items((agent && agent.conversation_history) || [])
+
     Logger.info("AgentDetailLive loaded agent state",
       agent_id: agent_id,
       from_instance: instance_state != nil,
       status: agent && agent.status,
-      history_length: length((agent && agent.conversation_history) || [])
+      history_length: length((agent && agent.conversation_history) || []),
+      todo_count: length(todo_items)
     )
 
     socket
     |> assign(agent: agent, plan: persisted_state.plan)
     |> assign(streaming_output: streaming_output)
+    |> assign(todo_items: todo_items)
   end
 
   # Convert unified conversation history to UI format
@@ -1233,4 +1333,36 @@ defmodule IpaWeb.Pod.AgentDetailLive do
   end
 
   defp convert_to_ui_format(nil), do: []
+
+  # Extract todo items from the most recent TodoWrite call in conversation history
+  defp extract_todo_items(conversation) when is_list(conversation) do
+    conversation
+    |> Enum.filter(fn msg ->
+      msg[:role] == :tool_call and msg[:name] == "TodoWrite"
+    end)
+    |> List.last()
+    |> case do
+      nil -> []
+      tool_call ->
+        args = tool_call[:args] || %{}
+        todos = args["todos"] || args[:todos] || []
+        Enum.map(todos, fn todo ->
+          %{
+            content: todo["content"] || todo[:content] || "",
+            status: parse_todo_status(todo["status"] || todo[:status]),
+            active_form: todo["activeForm"] || todo[:activeForm] || todo["active_form"] || todo[:active_form] || ""
+          }
+        end)
+    end
+  end
+
+  defp extract_todo_items(_), do: []
+
+  defp parse_todo_status("completed"), do: :completed
+  defp parse_todo_status("in_progress"), do: :in_progress
+  defp parse_todo_status("pending"), do: :pending
+  defp parse_todo_status(:completed), do: :completed
+  defp parse_todo_status(:in_progress), do: :in_progress
+  defp parse_todo_status(:pending), do: :pending
+  defp parse_todo_status(_), do: :pending
 end

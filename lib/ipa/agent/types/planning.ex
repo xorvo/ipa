@@ -11,26 +11,39 @@ defmodule Ipa.Agent.Types.Planning do
 
   ## Output
 
-  The planning agent writes a `workstreams_plan.json` file containing:
+  The planning agent writes an `output.json` file containing:
   ```json
   {
-    "workstreams": [
-      {
-        "id": "ws-1",
-        "title": "Set up database schema",
-        "description": "...",
-        "dependencies": [],
-        "estimated_hours": 8
-      }
-    ]
+    "updated_content": {
+      "summary": "Brief summary of the plan",
+      "workstreams": [
+        {
+          "id": "ws-1",
+          "title": "Set up database schema",
+          "description": "...",
+          "dependencies": [],
+          "estimated_hours": 8
+        }
+      ]
+    },
+    "new_comments": [],
+    "questions": []
   }
   ```
+
+  ## Iteration
+
+  The agent supports iterative refinement:
+  - First run: creates initial plan from spec
+  - Subsequent runs: refines plan based on user feedback and unresolved threads
 
   ## Completion Handling
 
   On completion, this agent:
-  1. Reads the workstreams_plan.json file
+  1. Reads the output.json file
   2. Emits a `plan_updated` event with the workstream data
+  3. Posts any replies to user comments
+  4. Creates question threads for clarifications
   """
 
   @behaviour Ipa.Agent
@@ -42,28 +55,32 @@ defmodule Ipa.Agent.Types.Planning do
   @impl true
   def generate_prompt(context) do
     task = context[:task] || %{}
+    current_plan = context[:current_plan]
+    user_input = context[:user_input] || ""
+    review_threads = context[:review_threads] || []
 
     # Handle both struct and map access for task
     spec = get_field(task, :spec) || %{}
 
     spec_description =
       cond do
+        is_binary(get_field(spec, :content)) -> get_field(spec, :content)
         is_binary(get_field(spec, :description)) -> get_field(spec, :description)
+        is_binary(spec["content"]) -> spec["content"]
         is_binary(spec["description"]) -> spec["description"]
         true -> "No spec description provided"
       end
 
     task_title = get_field(task, :title) || task["title"] || "Untitled Task"
 
-    # Note: Workspace rules are now included via CLAUDE.md generation through ContentBlock.
-    # The agent's working directory is set via the cwd option in configure_options/1.
+    base_prompt = """
+    You are a software architect planning workstreams for a task.
 
-    """
-    Task: #{task_title}
+    ## Task: #{task_title}
 
-    Spec: #{spec_description}
+    ## Specification
 
-    Your role: Analyze this task and determine if it needs to be split into workstreams.
+    #{spec_description}
 
     ## Guidelines for Workstream Planning
 
@@ -86,25 +103,164 @@ defmodule Ipa.Agent.Types.Planning do
     - Represent a meaningful, complete unit of work
     - Have clear boundaries and deliverables
     - Be substantial enough to justify the overhead of separate execution
+    """
 
-    IMPORTANT: You are running in an isolated workspace directory. All file operations should use RELATIVE paths only.
-    Write your output to a file named `workstreams_plan.json` in the CURRENT DIRECTORY (use relative path, NOT absolute).
+    content_section =
+      if current_plan && current_plan != %{} && has_workstreams?(current_plan) do
+        threads_section = format_review_threads(review_threads)
+        current_workstreams = format_current_plan(current_plan)
 
-    Output a JSON structure to file `./workstreams_plan.json`:
+        """
+
+        ---
+
+        ## Current Plan (to refine)
+
+        #{current_workstreams}
+
+        #{threads_section}
+
+        ## User Feedback
+
+        #{user_input}
+
+        Please refine the plan based on the feedback above. Address any user comments.
+        """
+      else
+        """
+
+        ---
+
+        ## User's Planning Requirements
+
+        #{user_input}
+
+        Please create a workstream plan based on the spec and these requirements.
+        """
+      end
+
+    output_section = """
+
+    ---
+
+    ## Output Instructions
+
+    IMPORTANT: You MUST output a JSON file named `output.json` in the current directory.
+
+    The JSON structure must be:
+    ```json
     {
-      "workstreams": [
+      "updated_content": {
+        "summary": "Brief summary of the plan and approach",
+        "workstreams": [
+          {
+            "id": "ws-1",
+            "title": "Workstream title",
+            "description": "Detailed description of what this workstream covers",
+            "dependencies": [],
+            "estimated_hours": 8
+          }
+        ]
+      },
+      "new_comments": [
         {
-          "id": "ws-1",
-          "title": "Implement user authentication system",
-          "description": "Build the complete auth flow including login, registration, password reset, and session management",
-          "dependencies": [],
-          "estimated_hours": 24
+          "thread_id": "existing-thread-id-if-replying",
+          "content": "Your response to user feedback"
+        }
+      ],
+      "questions": [
+        {
+          "content": "A question you need answered to improve the plan"
         }
       ]
     }
+    ```
+
+    - `updated_content`: The complete plan with summary and workstreams
+    - `new_comments`: Replies to existing user comment threads (use thread_id from feedback). Empty array if none.
+    - `questions`: New questions for the user. Empty array if none.
 
     Note: It is perfectly acceptable to output just ONE workstream if the task doesn't benefit from splitting.
+
+    Write only the JSON file. Do not create any other files.
     """
+
+    base_prompt <> content_section <> output_section
+  end
+
+  defp has_workstreams?(plan) do
+    workstreams = plan[:workstreams] || plan["workstreams"] || []
+    length(workstreams) > 0
+  end
+
+  defp format_review_threads([]), do: ""
+
+  defp format_review_threads(threads) do
+    formatted =
+      threads
+      |> Enum.map(fn thread ->
+        thread_id = thread[:thread_id] || thread["thread_id"]
+        messages = thread[:messages] || thread["messages"] || []
+        is_question = thread[:is_question] || thread["is_question"] || false
+        type_label = if is_question, do: "[QUESTION]", else: "[COMMENT]"
+
+        messages_text =
+          messages
+          |> Enum.map(fn msg ->
+            author = msg[:author] || msg["author"]
+            content = msg[:content] || msg["content"]
+            "  - #{author}: #{content}"
+          end)
+          |> Enum.join("\n")
+
+        """
+        #{type_label} Thread ID: #{thread_id}
+        #{messages_text}
+        """
+      end)
+      |> Enum.join("\n")
+
+    """
+    ## Unresolved Feedback (address these)
+
+    #{formatted}
+    """
+  end
+
+  defp format_current_plan(plan) do
+    workstreams = plan[:workstreams] || plan["workstreams"] || []
+    summary = plan[:summary] || plan["summary"] || ""
+
+    ws_text =
+      workstreams
+      |> Enum.map(fn ws ->
+        id = ws[:id] || ws["id"] || "?"
+        title = ws[:title] || ws["title"] || "Untitled"
+        desc = ws[:description] || ws["description"] || ""
+        deps = ws[:dependencies] || ws["dependencies"] || []
+        hours = ws[:estimated_hours] || ws["estimated_hours"] || 0
+
+        deps_str = if Enum.empty?(deps), do: "None", else: Enum.join(deps, ", ")
+
+        """
+        ### #{id}: #{title}
+        #{desc}
+
+        Dependencies: #{deps_str}
+        Estimated: #{hours} hours
+        """
+      end)
+      |> Enum.join("\n")
+
+    if summary != "" do
+      """
+      **Summary**: #{summary}
+
+      #{ws_text}
+      """
+    else
+      ws_text
+    end
   end
 
   @impl true
@@ -116,8 +272,9 @@ defmodule Ipa.Agent.Types.Planning do
       allowed_tools: ["Read", "Write", "Bash", "Glob", "Grep"],
       max_turns: 50,
       timeout_ms: 3_600_000,
-      # Required for headless/non-interactive execution
-      permission_mode: :accept_edits
+      permission_mode: :accept_edits,
+      # Non-interactive: agent completes automatically after generating output.json
+      interactive: false
     }
   end
 
@@ -127,34 +284,44 @@ defmodule Ipa.Agent.Types.Planning do
     task = context[:task]
     task_id = context[:task_id] || get_field(task, :task_id)
 
-    Logger.info("Planning agent completed, reading workstreams plan",
+    Logger.info("Planning agent completed",
       task_id: task_id,
       workspace: workspace
     )
 
-    # Only look for the plan file in the agent's dedicated workspace
-    # The SDK's cwd option ensures files are created in the workspace
-    plan_path = Path.join(workspace || ".", "workstreams_plan.json")
+    output_path = Path.join(workspace || ".", "output.json")
 
-    case File.read(plan_path) do
-      {:ok, content} ->
-        Logger.info("Found workstreams plan file", path: plan_path)
-        # Clean up the file after reading to avoid stale data on next run
-        cleanup_plan_file(plan_path)
-        process_plan_file(content, task_id)
+    case File.read(output_path) do
+      {:ok, json_content} ->
+        case Jason.decode(json_content) do
+          {:ok, output} ->
+            Logger.info("Parsed output.json successfully", path: output_path)
+            process_agent_output(task_id, output)
+
+          {:error, decode_error} ->
+            Logger.error("Failed to parse output.json",
+              task_id: task_id,
+              path: output_path,
+              error: inspect(decode_error)
+            )
+
+            # Fallback to legacy format
+            handle_legacy_output(task_id, workspace)
+        end
 
       {:error, :enoent} ->
-        Logger.error("Workstreams plan file not found",
+        # Fallback: try reading workstreams_plan.json for backward compatibility
+        Logger.warning("output.json not found, trying legacy format",
           task_id: task_id,
-          expected_path: plan_path
+          expected_path: output_path
         )
 
-        {:error, :plan_file_not_found}
+        handle_legacy_output(task_id, workspace)
 
       {:error, reason} ->
-        Logger.error("Failed to read workstreams plan file",
+        Logger.error("Failed to read output.json",
           task_id: task_id,
-          path: plan_path,
+          path: output_path,
           reason: inspect(reason)
         )
 
@@ -162,15 +329,182 @@ defmodule Ipa.Agent.Types.Planning do
     end
   end
 
-  @impl true
-  def handle_tool_call(tool_name, args, _context) do
-    Logger.debug("Planning agent tool call", tool: tool_name, args: args)
+  # Process the structured JSON output from the agent
+  defp process_agent_output(task_id, output) do
+    # 1. Process updated_content -> emit plan_updated event
+    updated_content = output["updated_content"]
+
+    if updated_content && is_map(updated_content) do
+      Logger.info("Updating plan content", task_id: task_id)
+
+      workstreams = updated_content["workstreams"] || []
+      summary = updated_content["summary"]
+
+      Ipa.EventStore.append(
+        task_id,
+        "plan_updated",
+        %{
+          summary: summary,
+          workstreams: workstreams,
+          total_estimated_hours: calculate_total_hours(workstreams)
+        },
+        actor_id: "planning_agent"
+      )
+    end
+
+    # 2. Process new_comments -> post as review comment replies
+    new_comments = output["new_comments"] || []
+    process_new_comments(task_id, new_comments)
+
+    # 3. Process questions -> post as new review threads
+    questions = output["questions"] || []
+    process_questions(task_id, questions)
+
     :ok
   end
 
-  # ============================================================================
-  # Private Functions
-  # ============================================================================
+  # Post agent's replies to existing comment threads
+  defp process_new_comments(task_id, comments) do
+    Enum.each(comments, fn comment ->
+      thread_id = comment["thread_id"]
+      content = comment["content"]
+
+      if thread_id && content && String.trim(content) != "" do
+        Logger.info("Posting agent reply to plan thread",
+          task_id: task_id,
+          thread_id: thread_id
+        )
+
+        case get_thread_anchor(task_id, thread_id) do
+          {:ok, anchor} ->
+            post_review_comment(task_id, %{
+              author: "planning_agent",
+              content: content,
+              document_type: :plan,
+              document_anchor: anchor,
+              thread_id: thread_id
+            })
+
+          {:error, _reason} ->
+            # Create minimal anchor for reply
+            post_review_comment(task_id, %{
+              author: "planning_agent",
+              content: content,
+              document_type: :plan,
+              document_anchor: %{
+                selected_text: "[Reply]",
+                surrounding_text: "",
+                line_start: 0,
+                line_end: 0
+              },
+              thread_id: thread_id
+            })
+        end
+      end
+    end)
+  end
+
+  # Post agent's questions as new review threads
+  defp process_questions(task_id, questions) do
+    Enum.each(questions, fn question ->
+      content = question["content"]
+
+      if content && String.trim(content) != "" do
+        Logger.info("Posting agent question for plan", task_id: task_id)
+
+        anchor = %{
+          selected_text: "[Agent Question]",
+          surrounding_text: "",
+          line_start: 0,
+          line_end: 0
+        }
+
+        post_review_comment(task_id, %{
+          author: "planning_agent",
+          content: content,
+          document_type: :plan,
+          document_anchor: anchor,
+          is_question: true
+        })
+      end
+    end)
+  end
+
+  # Get the document anchor from an existing thread
+  defp get_thread_anchor(task_id, thread_id) do
+    case Ipa.Pod.Manager.get_state_from_events(task_id) do
+      {:ok, state} ->
+        case Map.get(state.messages, thread_id) do
+          nil ->
+            {:error, :thread_not_found}
+
+          message ->
+            anchor = message.metadata[:document_anchor] || message.metadata["document_anchor"]
+
+            if anchor do
+              {:ok, anchor}
+            else
+              {:error, :no_anchor}
+            end
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Post a review comment via event store
+  defp post_review_comment(task_id, params) do
+    message_id = Ecto.UUID.generate()
+    thread_id = params[:thread_id] || message_id
+
+    metadata = %{
+      document_type: params[:document_type],
+      document_anchor: params[:document_anchor],
+      resolved?: false,
+      resolved_by: nil,
+      resolved_at: nil,
+      is_question: Map.get(params, :is_question, false)
+    }
+
+    Ipa.EventStore.append(
+      task_id,
+      "message_posted",
+      %{
+        message_id: message_id,
+        author: params[:author],
+        content: params[:content],
+        message_type: "review_comment",
+        thread_id: thread_id,
+        workstream_id: nil,
+        metadata: metadata
+      },
+      actor_id: "planning_agent"
+    )
+  end
+
+  # Handle legacy workstreams_plan.json output for backward compatibility
+  defp handle_legacy_output(task_id, workspace) do
+    plan_path = Path.join(workspace || ".", "workstreams_plan.json")
+
+    case File.read(plan_path) do
+      {:ok, content} ->
+        Logger.info("Found legacy workstreams_plan.json", path: plan_path)
+        # Clean up the file after reading
+        cleanup_plan_file(plan_path)
+        process_legacy_plan_file(content, task_id)
+
+      {:error, :enoent} ->
+        Logger.error("Neither output.json nor workstreams_plan.json found",
+          task_id: task_id
+        )
+
+        {:error, :output_file_not_found}
+
+      {:error, reason} ->
+        {:error, {:file_read_error, reason}}
+    end
+  end
 
   defp cleanup_plan_file(path) do
     case File.rm(path) do
@@ -185,17 +519,16 @@ defmodule Ipa.Agent.Types.Planning do
     end
   end
 
-  defp process_plan_file(content, task_id) do
+  defp process_legacy_plan_file(content, task_id) do
     case Jason.decode(content) do
       {:ok, plan_data} ->
         workstreams = plan_data["workstreams"] || []
 
-        Logger.info("Successfully read workstreams plan",
+        Logger.info("Successfully read legacy workstreams plan",
           task_id: task_id,
           workstream_count: length(workstreams)
         )
 
-        # Emit plan_updated event with workstreams data
         Ipa.EventStore.append(
           task_id,
           "plan_updated",
@@ -210,10 +543,9 @@ defmodule Ipa.Agent.Types.Planning do
         :ok
 
       {:error, json_error} ->
-        Logger.error("Failed to parse workstreams plan JSON",
+        Logger.error("Failed to parse legacy workstreams plan JSON",
           task_id: task_id,
-          error: inspect(json_error),
-          content_preview: String.slice(content, 0, 200)
+          error: inspect(json_error)
         )
 
         {:error, {:json_parse_error, json_error}}
@@ -228,6 +560,12 @@ defmodule Ipa.Agent.Types.Planning do
   end
 
   defp calculate_total_hours(_), do: 0.0
+
+  @impl true
+  def handle_tool_call(tool_name, args, _context) do
+    Logger.debug("Planning agent tool call", tool: tool_name, args: args)
+    :ok
+  end
 
   # Helper to access struct or map fields uniformly
   defp get_field(nil, _key), do: nil

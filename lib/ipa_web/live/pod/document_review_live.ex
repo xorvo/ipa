@@ -82,7 +82,47 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
     if content && content != "", do: content, else: nil
   end
 
-  defp get_document_content(state, :plan), do: state.plan
+  defp get_document_content(state, :plan) do
+    case state.plan do
+      nil -> nil
+      plan when is_map(plan) -> format_plan_content(plan)
+      plan when is_binary(plan) -> plan
+      _ -> nil
+    end
+  end
+
+  defp format_plan_content(plan) do
+    workstreams = plan[:workstreams] || plan["workstreams"] || []
+
+    if Enum.empty?(workstreams) do
+      "No workstreams defined yet."
+    else
+      workstreams
+      |> Enum.map(&format_workstream/1)
+      |> Enum.join("\n\n")
+    end
+  end
+
+  defp format_workstream(ws) do
+    id = ws[:id] || ws["id"] || "unknown"
+    title = ws[:title] || ws["title"] || "Untitled"
+    description = ws[:description] || ws["description"] || ""
+    deps = ws[:dependencies] || ws["dependencies"] || []
+    hours = ws[:estimated_hours] || ws["estimated_hours"]
+
+    deps_str = if Enum.empty?(deps), do: "None", else: Enum.join(deps, ", ")
+    hours_str = if hours, do: "#{hours} hours", else: "Not estimated"
+
+    """
+    ## #{id}: #{title}
+
+    #{description}
+
+    Dependencies: #{deps_str}
+    Estimated: #{hours_str}
+    """
+    |> String.trim()
+  end
   defp get_document_content(_state, :report), do: nil
 
   # ============================================================================
@@ -262,6 +302,36 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
     end
   end
 
+  def handle_event("generate_plan", %{"input" => input}, socket) do
+    %{task_id: task_id, state: state} = socket.assigns
+
+    cond do
+      String.trim(input) == "" ->
+        {:noreply, put_flash(socket, :error, "Please provide planning requirements")}
+
+      State.plan_approved?(state) ->
+        {:noreply, put_flash(socket, :error, "Plan is already approved")}
+
+      true ->
+        with :ok <- ensure_pod_running(task_id),
+             {:ok, _agent_id} <- Manager.spawn_planning_agent(task_id, input) do
+          {:noreply,
+           socket
+           |> assign(:generation_status, :generating)
+           |> put_flash(:info, "Plan generation started")}
+        else
+          {:error, :generation_in_progress} ->
+            {:noreply, put_flash(socket, :error, "Generation already in progress")}
+
+          {:error, :invalid_phase} ->
+            {:noreply, put_flash(socket, :error, "Must be in planning phase to generate plan")}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Failed to start: #{inspect(reason)}")}
+        end
+    end
+  end
+
   # ============================================================================
   # PubSub Handlers
   # ============================================================================
@@ -331,6 +401,7 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
   defp truncate(str, max), do: String.slice(str, 0, max) <> "..."
 
   defp spec_approved?(state), do: State.spec_approved?(state)
+  defp plan_approved?(state), do: State.plan_approved?(state)
 
   # Get agents related to this document type based on their context
   # Safely handles agents created before the context field was added
@@ -429,13 +500,24 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
         <!-- AI Workflow Section (Top Priority) -->
         <%= if @doc_type == :spec and not spec_approved?(@state) do %>
           <.ai_workflow_section
+            doc_type={:spec}
             generation_status={@generation_status}
             related_agents={@related_agents}
             unanswered_count={@unanswered_count}
             agent_history_expanded={@agent_history_expanded}
           />
-        <% else %>
-          <!-- Show agent activity even when spec is approved -->
+        <% end %>
+        <%= if @doc_type == :plan and not plan_approved?(@state) do %>
+          <.ai_workflow_section
+            doc_type={:plan}
+            generation_status={@generation_status}
+            related_agents={@related_agents}
+            unanswered_count={@unanswered_count}
+            agent_history_expanded={@agent_history_expanded}
+          />
+        <% end %>
+        <!-- Show agent activity when document is approved -->
+        <%= if (@doc_type == :spec and spec_approved?(@state)) or (@doc_type == :plan and plan_approved?(@state)) do %>
           <%= if length(@related_agents) > 0 do %>
             <.agent_activity_bar related_agents={@related_agents} />
           <% end %>
@@ -685,7 +767,8 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
     """
   end
 
-  # AI Workflow Section - Original layout with smaller text and collapsible history
+  # AI Workflow Section - Dynamic for spec or plan generation
+  attr :doc_type, :atom, required: true
   attr :generation_status, :atom, required: true
   attr :related_agents, :list, required: true
   attr :unanswered_count, :integer, required: true
@@ -699,11 +782,41 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
       a.status in [:completed, :failed] and (active_agent == nil or a.agent_id != active_agent.agent_id)
     end)
 
+    # Dynamic content based on doc_type
+    {title, description_new, description_iterate, placeholder_new, placeholder_iterate, submit_event, generating_text} =
+      case assigns.doc_type do
+        :spec ->
+          {"AI Spec Generator",
+           "Generate a specification from your requirements",
+           "Iterate on your spec with AI assistance",
+           "e.g., A REST API for user management...",
+           "e.g., Add error handling section...",
+           "generate_spec",
+           "Generating specification..."}
+        :plan ->
+          {"AI Plan Generator",
+           "Generate a workstream plan from the specification",
+           "Iterate on your plan with AI assistance",
+           "e.g., Break this into parallel workstreams...",
+           "e.g., Split the database workstream further...",
+           "generate_plan",
+           "Generating plan..."}
+        _ ->
+          {"AI Generator", "Generate content", "Iterate on content", "...", "...", "generate_content", "Generating..."}
+      end
+
     assigns =
       assigns
       |> assign(:active_agent, active_agent)
       |> assign(:has_completed, has_completed)
       |> assign(:completed_agents, completed_agents)
+      |> assign(:title, title)
+      |> assign(:description_new, description_new)
+      |> assign(:description_iterate, description_iterate)
+      |> assign(:placeholder_new, placeholder_new)
+      |> assign(:placeholder_iterate, placeholder_iterate)
+      |> assign(:submit_event, submit_event)
+      |> assign(:generating_text, generating_text)
 
     ~H"""
     <div class="card bg-base-100 shadow-sm border border-primary/20">
@@ -714,9 +827,9 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
             <.icon name="hero-sparkles" class="w-5 h-5 text-primary" />
           </div>
           <div class="flex-1">
-            <h3 class="text-sm font-semibold">AI Spec Generator</h3>
+            <h3 class="text-sm font-semibold">{@title}</h3>
             <p class="text-xs text-base-content/60">
-              <%= if @has_completed, do: "Iterate on your spec with AI assistance", else: "Generate a specification from your requirements" %>
+              <%= if @has_completed, do: @description_iterate, else: @description_new %>
             </p>
           </div>
           <.generation_status_badge status={@generation_status} />
@@ -733,7 +846,7 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
               <div class="flex items-center gap-2">
                 <%= if @active_agent.status == :running do %>
                   <span class="loading loading-spinner loading-sm text-info"></span>
-                  <span class="text-xs font-medium">Generating specification...</span>
+                  <span class="text-xs font-medium">{@generating_text}</span>
                 <% else %>
                   <.icon name="hero-chat-bubble-left-ellipsis" class="w-4 h-4 text-warning" />
                   <span class="text-xs">
@@ -754,16 +867,16 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
 
         <!-- Input Form -->
         <%= if @generation_status in [:idle, :completed] and @active_agent == nil do %>
-          <form phx-submit="generate_spec" class="mt-4">
+          <form phx-submit={@submit_event} class="mt-4">
             <label class="text-xs text-base-content/70 mb-1 block">
-              <%= if @has_completed, do: "Describe changes or additional requirements", else: "What should this spec cover?" %>
+              <%= if @has_completed, do: "Describe changes or additional requirements", else: "What should this cover?" %>
             </label>
             <div class="flex gap-2">
               <input
                 type="text"
                 name="input"
                 class="input input-bordered input-sm flex-1 text-sm"
-                placeholder={if @has_completed, do: "e.g., Add error handling section...", else: "e.g., A REST API for user management..."}
+                placeholder={if @has_completed, do: @placeholder_iterate, else: @placeholder_new}
                 required
               />
               <button type="submit" class="btn btn-primary btn-sm gap-1">
