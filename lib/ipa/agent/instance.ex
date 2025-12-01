@@ -70,7 +70,9 @@ defmodule Ipa.Agent.Instance do
     current_turn_text: "",
     # Current turn number (increments on each user message)
     turn_number: 0,
-    interactive: true
+    interactive: true,
+    # Timeout for SDK calls (default 2 hours)
+    timeout_ms: 7_200_000
   ]
 
   @type history_entry ::
@@ -204,6 +206,7 @@ defmodule Ipa.Agent.Instance do
     prompt = agent_type.generate_prompt(context)
     options = agent_type.configure_options(context)
     interactive = Map.get(options, :interactive, true)
+    timeout_ms = options.timeout_ms || 7_200_000
 
     # Start a Claude Session for multi-turn conversations
     session_opts = convert_options_to_session_opts(options)
@@ -223,7 +226,8 @@ defmodule Ipa.Agent.Instance do
       current_turn_text: "",
       turn_number: 0,
       context: context,
-      interactive: interactive
+      interactive: interactive,
+      timeout_ms: timeout_ms
     }
 
     # Schedule notification and query to run after init completes
@@ -260,10 +264,11 @@ defmodule Ipa.Agent.Instance do
     # Spawn a Task to run the Claude SDK Session query
     # The Task sends messages back to this GenServer as they arrive
     parent = self()
+    timeout_ms = state.timeout_ms
 
     task =
       Task.async(fn ->
-        run_session_query(state.session, prompt, parent)
+        run_session_query(state.session, prompt, parent, timeout_ms)
       end)
 
     {:noreply, %{state | status: :running, query_task: task}}
@@ -402,10 +407,11 @@ defmodule Ipa.Agent.Instance do
 
       # Spawn a Task to run the message through the session
       parent = self()
+      timeout_ms = state.timeout_ms
 
       task =
         Task.async(fn ->
-          run_session_query(state.session, message, parent)
+          run_session_query(state.session, message, parent, timeout_ms)
         end)
 
       {:reply, :ok, %{state | query_task: task}}
@@ -507,9 +513,12 @@ defmodule Ipa.Agent.Instance do
     {:via, Registry, {Ipa.PodRegistry, {:agent, agent_id}}}
   end
 
-  defp run_session_query(session, prompt, parent) do
+  defp run_session_query(session, prompt, parent, timeout_ms) do
     # Use Session's stream/4 for streaming responses with conversation history
-    ClaudeAgentSdkTs.Session.stream(session, prompt, [], fn message ->
+    # Pass the timeout to the SDK so it doesn't use the default 5-minute timeout
+    stream_opts = [timeout: timeout_ms]
+
+    ClaudeAgentSdkTs.Session.stream(session, prompt, stream_opts, fn message ->
       send(parent, {:stream_message, message})
     end)
     |> case do
