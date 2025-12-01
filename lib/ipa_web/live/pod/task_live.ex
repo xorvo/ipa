@@ -48,7 +48,7 @@ defmodule IpaWeb.Pod.TaskLive do
           |> assign(selected_workstream_id: nil)
           |> assign(message_input: "")
           |> assign(editing_spec: false)
-          |> assign(spec_description: state.spec[:description] || state.spec["description"] || "")
+          |> assign(spec_description: get_spec_content(state.spec))
           |> assign(events: Enum.reverse(events))
           |> assign(event_filter: "all")
           |> assign(selected_event: nil)
@@ -140,9 +140,7 @@ defmodule IpaWeb.Pod.TaskLive do
      |> assign(state: new_state)
      |> assign(events: events)
      |> assign(
-       spec_description:
-         new_state.spec[:description] || new_state.spec["description"] ||
-           socket.assigns.spec_description
+       spec_description: get_spec_content(new_state.spec) || socket.assigns.spec_description
      )}
   end
 
@@ -164,9 +162,7 @@ defmodule IpaWeb.Pod.TaskLive do
      socket
      |> assign(state: new_state)
      |> assign(
-       spec_description:
-         new_state.spec[:description] || new_state.spec["description"] ||
-           socket.assigns.spec_description
+       spec_description: get_spec_content(new_state.spec) || socket.assigns.spec_description
      )}
   end
 
@@ -193,13 +189,11 @@ defmodule IpaWeb.Pod.TaskLive do
       "spec_updated" ->
         spec_data = event.data[:spec] || event.data
 
-        new_spec = %{
-          state.spec
-          | description: spec_data[:description] || state.spec[:description],
-            requirements: spec_data[:requirements] || state.spec[:requirements] || [],
-            acceptance_criteria:
-              spec_data[:acceptance_criteria] || state.spec[:acceptance_criteria] || []
-        }
+        new_spec =
+          Map.merge(state.spec, %{
+            content: spec_data[:content] || state.spec[:content],
+            workspace_path: spec_data[:workspace_path] || state.spec[:workspace_path]
+          })
 
         %{state | spec: new_spec, version: event.version, updated_at: event.inserted_at}
 
@@ -338,13 +332,12 @@ defmodule IpaWeb.Pod.TaskLive do
   end
 
   def handle_event("save_spec", _params, socket) do
-    %{task_id: task_id, state: state, spec_description: description} = socket.assigns
+    %{task_id: task_id, spec_description: content} = socket.assigns
 
+    # Use new content-based format
     spec_data = %{
-      description: description,
-      requirements: state.spec[:requirements] || state.spec["requirements"] || [],
-      acceptance_criteria:
-        state.spec[:acceptance_criteria] || state.spec["acceptance_criteria"] || []
+      content: content,
+      workspace_path: nil
     }
 
     # Route through Manager
@@ -877,9 +870,19 @@ defmodule IpaWeb.Pod.TaskLive do
         <% else %>
           <!-- View Mode -->
           <%= if @state.spec do %>
-            <div class="prose prose-sm max-w-none">
-              <p>{@state.spec[:description] || @state.spec["description"] || "No description"}</p>
-            </div>
+            <% spec_content = get_spec_content(@state.spec) %>
+            <%= if spec_content && spec_content != "" do %>
+              <div class="max-h-80 overflow-y-auto border border-base-300 rounded-lg p-4 bg-base-200/30">
+                <div
+                  id="spec-markdown-preview"
+                  class="spec-content"
+                  phx-hook="Markdown"
+                  data-content={spec_content}
+                ></div>
+              </div>
+            <% else %>
+              <p class="text-base-content/60">No description</p>
+            <% end %>
             <%= if !(@state.spec[:approved?] || @state.spec["approved?"]) do %>
               <div class="mt-4 flex gap-2">
                 <button phx-click="edit_spec" class="btn btn-outline btn-sm">
@@ -923,63 +926,52 @@ defmodule IpaWeb.Pod.TaskLive do
       <.card title="Plan">
         <%= if @state.plan do %>
           <!-- Display workstreams from planning agent -->
-          <%= if workstreams = @state.plan[:workstreams] || @state.plan["workstreams"] do %>
+          <% plan_workstreams = @state.plan[:workstreams] || @state.plan["workstreams"] %>
+          <%= if plan_workstreams do %>
             <div class="space-y-4">
               <h4 class="font-medium text-base-content/80">Workstreams</h4>
               <div class="space-y-3">
-                <%= for ws <- List.wrap(workstreams) do %>
-                  <div class="bg-base-200 rounded-lg p-4">
-                    <div class="flex items-start justify-between">
-                      <div class="flex-1">
-                        <div class="flex items-center gap-2">
-                          <span class="badge badge-sm badge-outline font-mono">
-                            {ws[:id] || ws["id"]}
-                          </span>
-                          <h5 class="font-semibold">{ws[:title] || ws["title"]}</h5>
-                        </div>
-                        <p class="text-sm text-base-content/70 mt-2">
-                          {ws[:description] || ws["description"]}
-                        </p>
-                        <div class="flex items-center gap-4 mt-3 text-xs text-base-content/60">
-                          <%= if deps = ws[:dependencies] || ws["dependencies"] do %>
-                            <%= if length(deps) > 0 do %>
-                              <span class="flex items-center gap-1">
-                                <.icon name="hero-link" class="w-3 h-3" />
-                                Depends on: {Enum.join(deps, ", ")}
-                              </span>
-                            <% else %>
-                              <span class="flex items-center gap-1 text-success">
-                                <.icon name="hero-check" class="w-3 h-3" /> No dependencies
-                              </span>
-                            <% end %>
-                          <% end %>
-                          <%= if hours = ws[:estimated_hours] || ws["estimated_hours"] do %>
-                            <span class="flex items-center gap-1">
-                              <.icon name="hero-clock" class="w-3 h-3" />
-                              {hours} hour(s)
-                            </span>
-                          <% end %>
-                        </div>
+                <div :for={ws <- List.wrap(plan_workstreams)} class="bg-base-200 rounded-lg p-4">
+                  <div class="flex items-start justify-between">
+                    <div class="flex-1">
+                      <div class="flex items-center gap-2">
+                        <span class="badge badge-sm badge-outline font-mono">
+                          {ws[:id] || ws["id"]}
+                        </span>
+                        <h5 class="font-semibold">{ws[:title] || ws["title"]}</h5>
+                      </div>
+                      <p class="text-sm text-base-content/70 mt-2">
+                        {ws[:description] || ws["description"]}
+                      </p>
+                      <% ws_deps = ws[:dependencies] || ws["dependencies"] %>
+                      <% ws_hours = ws[:estimated_hours] || ws["estimated_hours"] %>
+                      <div class="flex items-center gap-4 mt-3 text-xs text-base-content/60">
+                        <span :if={ws_deps && length(ws_deps) > 0} class="flex items-center gap-1">
+                          <.icon name="hero-link" class="w-3 h-3" />
+                          Depends on: {Enum.join(ws_deps, ", ")}
+                        </span>
+                        <span :if={ws_deps && length(ws_deps) == 0} class="flex items-center gap-1 text-success">
+                          <.icon name="hero-check" class="w-3 h-3" /> No dependencies
+                        </span>
+                        <span :if={ws_hours} class="flex items-center gap-1">
+                          <.icon name="hero-clock" class="w-3 h-3" />
+                          {ws_hours} hour(s)
+                        </span>
                       </div>
                     </div>
                   </div>
-                <% end %>
+                </div>
               </div>
             </div>
           <% end %>
           <!-- Also display steps if present (for backwards compatibility) -->
-          <%= if steps = @state.plan[:steps] || @state.plan["steps"] do %>
-            <%= if length(List.wrap(steps)) > 0 do %>
-              <div class="mt-4">
-                <h4 class="font-medium text-base-content/80 mb-2">Steps</h4>
-                <ol class="list-decimal list-inside space-y-2">
-                  <%= for step <- List.wrap(steps) do %>
-                    <li class="text-base-content">{format_step(step)}</li>
-                  <% end %>
-                </ol>
-              </div>
-            <% end %>
-          <% end %>
+          <% plan_steps = @state.plan[:steps] || @state.plan["steps"] %>
+          <div :if={plan_steps && length(List.wrap(plan_steps)) > 0} class="mt-4">
+            <h4 class="font-medium text-base-content/80 mb-2">Steps</h4>
+            <ol class="list-decimal list-inside space-y-2">
+              <li :for={step <- List.wrap(plan_steps)} class="text-base-content">{format_step(step)}</li>
+            </ol>
+          </div>
           <%= if !(@state.plan[:approved?] || @state.plan["approved?"]) do %>
             <div class="mt-4 flex gap-2">
               <button phx-click="approve_plan" class="btn btn-primary btn-sm">
@@ -2190,6 +2182,20 @@ defmodule IpaWeb.Pod.TaskLive do
   end
 
   defp maybe_auto_start_pod(_task_id, _phase), do: :ok
+
+  # Get spec content, supporting both new (content) and legacy (description) formats
+  defp get_spec_content(spec) when is_map(spec) do
+    content = spec[:content] || Map.get(spec, :content)
+    description = spec[:description] || Map.get(spec, :description)
+
+    cond do
+      content && content != "" -> content
+      description && description != "" -> description
+      true -> nil
+    end
+  end
+
+  defp get_spec_content(_), do: nil
 
   # Helper to ensure pod is running before executing commands
   # Returns :ok if pod is running or was started successfully

@@ -308,13 +308,14 @@ defmodule Ipa.Pod.ClaudeMdTemplates do
 
   # Format task spec for display
   defp format_task_spec(spec) when is_map(spec) do
-    description = spec[:description] || spec.description || ""
-    requirements = spec[:requirements] || spec.requirements || []
+    # Try new content field first, then fall back to legacy description
+    content = spec[:content] || Map.get(spec, :content)
+    description = spec[:description] || Map.get(spec, :description)
 
-    if description == "" and Enum.empty?(requirements) do
-      "No detailed specification provided"
-    else
-      description
+    cond do
+      content && content != "" -> content
+      description && description != "" -> description
+      true -> "No detailed specification provided"
     end
   end
 

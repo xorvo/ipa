@@ -191,6 +191,29 @@ defmodule Ipa.Pod.Manager do
     end
   end
 
+  @doc """
+  Spawns a spec generator agent.
+
+  This creates the workspace, starts the agent, and records the appropriate events
+  so the agent appears in the Agents tab with live progress.
+
+  ## Parameters
+    - `task_id` - Task UUID
+    - `input_content` - User's initial requirements to transform into a spec
+
+  ## Returns
+    - `{:ok, agent_id}` - Agent started successfully
+    - `{:error, reason}` - Failed to start agent
+  """
+  @spec spawn_spec_generator(String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def spawn_spec_generator(task_id, input_content) do
+    case GenServer.whereis(via_tuple(task_id)) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:spawn_spec_generator, input_content})
+    end
+  end
+
   # ============================================================================
   # GenServer Callbacks
   # ============================================================================
@@ -367,6 +390,36 @@ defmodule Ipa.Pod.Manager do
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:spawn_spec_generator, input_content}, _from, state) do
+    # Check if spec is already approved
+    if State.spec_approved?(state) do
+      {:reply, {:error, :spec_already_approved}, state}
+    else
+      # Check if we're in the right phase
+      if state.phase != :spec_clarification do
+        {:reply, {:error, :invalid_phase}, state}
+      else
+        # Check if there's already a spec generator running
+        has_running_spec_gen =
+          Enum.any?(state.agents, fn a ->
+            a.agent_type == :spec_generator and a.status == :running
+          end)
+
+        if has_running_spec_gen do
+          {:reply, {:error, :generation_in_progress}, state}
+        else
+          case spawn_spec_generator_impl(state, input_content) do
+            {:ok, agent_id, new_state} ->
+              {:reply, {:ok, agent_id}, new_state}
+
+            {:error, reason} ->
+              {:reply, {:error, reason}, state}
+          end
+        end
+      end
     end
   end
 
@@ -726,6 +779,90 @@ defmodule Ipa.Pod.Manager do
     end
   end
 
+  # Implementation for spawning spec generator agent
+  defp spawn_spec_generator_impl(state, input_content) do
+    # Create workspace for the spec generator
+    workspace_path = create_spec_generator_workspace(state.task_id)
+
+    # Get unresolved review threads for the spec
+    review_threads = get_unresolved_threads(state, :spec)
+
+    # Build context for the spec generator agent
+    agent_context = %{
+      task_id: state.task_id,
+      workspace: workspace_path,
+      user_input: input_content,
+      current_spec: get_in(state.spec, [:content]),
+      review_threads: review_threads,
+      task: %{
+        task_id: state.task_id,
+        title: state.title,
+        spec: state.spec
+      }
+    }
+
+    Logger.info("Spawning spec generator agent",
+      task_id: state.task_id,
+      workspace: workspace_path
+    )
+
+    # Start the agent process
+    case Ipa.Agent.Supervisor.start_agent(state.task_id, Ipa.Agent.Types.SpecGenerator, agent_context) do
+      {:ok, agent_id} ->
+        # Record the agent_started event with document context
+        case AgentCommands.start_agent(state, %{
+               agent_id: agent_id,
+               agent_type: :spec_generator,
+               workspace_path: workspace_path,
+               context: %{document_type: :spec}
+             }) do
+          {:ok, events} ->
+            case persist_and_apply_events(state, events) do
+              {:ok, new_state} ->
+                broadcast_state_update(new_state)
+                {:ok, agent_id, new_state}
+
+              {:error, reason} ->
+                {:error, reason}
+            end
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        Logger.error("Failed to start spec generator agent: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  # Create workspace for spec generator
+  defp create_spec_generator_workspace(task_id) do
+    ensure_base_workspace(task_id)
+
+    workspace_name = WorkspaceManager.generate_workspace_name("spec-generator", task_id)
+
+    case WorkspaceManager.create_sub_workspace(task_id, workspace_name, %{purpose: :spec_generator}) do
+      {:ok, path} ->
+        # Create output directory for the spec
+        output_dir = Path.join(path, "output")
+        File.mkdir_p!(output_dir)
+        Logger.debug("Created spec generator workspace", path: path)
+        path
+
+      {:error, :already_exists} ->
+        {:ok, path} = WorkspaceManager.get_sub_workspace_path(task_id, workspace_name)
+        path
+
+      {:error, reason} ->
+        Logger.error("Failed to create spec generator workspace: #{inspect(reason)}")
+        # Fall back to temporary directory
+        temp_path = Path.join([System.tmp_dir!(), "ipa", "spec-generator", task_id])
+        File.mkdir_p!(temp_path)
+        temp_path
+    end
+  end
+
   # Helper to spawn a pending agent when manually started
   defp spawn_pending_agent(state, agent) do
     # Build context based on agent type
@@ -738,6 +875,7 @@ defmodule Ipa.Pod.Manager do
         :planning_agent -> Ipa.Agent.Types.Planning
         :workstream -> Ipa.Agent.Types.Workstream
         :review -> Ipa.Agent.Types.Review
+        :spec_generator -> Ipa.Agent.Types.SpecGenerator
         _ -> Ipa.Agent.Types.Workstream
       end
 
@@ -934,5 +1072,40 @@ defmodule Ipa.Pod.Manager do
       "agent_completed",
       "agent_failed"
     ]
+  end
+
+  # Get unresolved review threads for a document type
+  # Returns a list of thread maps suitable for the agent's context
+  defp get_unresolved_threads(state, document_type) do
+    threads = State.get_review_threads(state, document_type)
+
+    threads
+    |> Enum.filter(fn {_thread_id, messages} ->
+      # Check if the thread is NOT resolved
+      first_msg = List.first(messages)
+
+      resolved? =
+        !!(first_msg && first_msg.metadata &&
+             (first_msg.metadata[:resolved?] || first_msg.metadata["resolved?"]))
+
+      not resolved?
+    end)
+    |> Enum.map(fn {thread_id, messages} ->
+      first_msg = List.first(messages)
+      is_question = first_msg && first_msg.metadata && first_msg.metadata[:is_question]
+
+      %{
+        thread_id: thread_id,
+        is_question: is_question || false,
+        messages:
+          Enum.map(messages, fn msg ->
+            %{
+              author: msg.author,
+              content: msg.content,
+              posted_at: msg.posted_at
+            }
+          end)
+      }
+    end)
   end
 end

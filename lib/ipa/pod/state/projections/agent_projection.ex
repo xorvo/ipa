@@ -34,7 +34,8 @@ defmodule Ipa.Pod.State.Projections.AgentProjection do
         workstream_id: event.workstream_id,
         workspace_path: event.workspace_path,
         status: :running,
-        started_at: System.system_time(:second)
+        started_at: System.system_time(:second),
+        context: event.context || %{}
       }
 
       %{state | agents: [agent | state.agents]}

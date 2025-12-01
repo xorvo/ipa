@@ -37,17 +37,14 @@ defmodule IpaWeb.Pod.TaskLiveTest do
         actor_id: "test"
       )
 
-    # Spec updated event
+    # Spec updated event - using new content-based format
     {:ok, _} =
       EventStore.append(
         task_id,
         "spec_updated",
         %{
-          spec: %{
-            description: "Test specification description",
-            requirements: ["Requirement 1", "Requirement 2"],
-            acceptance_criteria: ["Criteria 1"]
-          }
+          content: "# Test Specification\n\nTest specification description",
+          workspace_path: "/tmp/test-workspace"
         },
         actor_id: "test"
       )
@@ -93,7 +90,8 @@ defmodule IpaWeb.Pod.TaskLiveTest do
       {:ok, _view, html} = live(conn, ~p"/pods/#{task_id}")
 
       assert html =~ "Specification"
-      assert html =~ "Test specification description"
+      # Content is markdown, so checking for the text part
+      assert html =~ "Test Specification" or html =~ "specification description"
       assert html =~ "Spec Approved"
     end
 

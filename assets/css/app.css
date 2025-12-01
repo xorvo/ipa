@@ -230,3 +230,124 @@
 .diff-container .d2h-code-line {
     padding: 0 0.5rem;
 }
+
+/* Spec content markdown styling (light theme friendly) */
+.spec-content {
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: inherit;
+}
+
+.spec-content p {
+    margin-bottom: 0.75rem;
+}
+
+.spec-content h1,
+.spec-content h2,
+.spec-content h3,
+.spec-content h4 {
+    font-weight: 600;
+    margin-top: 1.25rem;
+    margin-bottom: 0.5rem;
+    color: inherit;
+}
+
+.spec-content h1 {
+    font-size: 1.5rem;
+    border-bottom: 1px solid oklch(50% 0 0 / 0.2);
+    padding-bottom: 0.375rem;
+}
+.spec-content h2 {
+    font-size: 1.25rem;
+}
+.spec-content h3 {
+    font-size: 1.125rem;
+}
+.spec-content h4 {
+    font-size: 1rem;
+}
+
+.spec-content code {
+    background: oklch(50% 0 0 / 0.1);
+    padding: 0.125rem 0.375rem;
+    border-radius: 0.25rem;
+    font-size: 0.8125rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.spec-content pre {
+    background: oklch(20% 0.01 250);
+    padding: 1rem;
+    border-radius: 0.5rem;
+    overflow-x: auto;
+    margin: 1rem 0;
+}
+
+.spec-content pre code {
+    background: transparent;
+    padding: 0;
+    font-size: 0.8125rem;
+    color: oklch(90% 0 0);
+}
+
+.spec-content ul {
+    list-style-type: disc;
+    padding-left: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.spec-content ol {
+    list-style-type: decimal;
+    padding-left: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.spec-content li {
+    margin-bottom: 0.375rem;
+}
+
+.spec-content li > ul,
+.spec-content li > ol {
+    margin-top: 0.375rem;
+    margin-bottom: 0;
+}
+
+.spec-content blockquote {
+    border-left: 3px solid oklch(50% 0 0 / 0.3);
+    padding-left: 1rem;
+    margin: 1rem 0;
+    font-style: italic;
+    opacity: 0.85;
+}
+
+.spec-content table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.8125rem;
+}
+
+.spec-content th,
+.spec-content td {
+    border: 1px solid oklch(50% 0 0 / 0.2);
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+}
+
+.spec-content th {
+    background: oklch(50% 0 0 / 0.05);
+    font-weight: 600;
+}
+
+.spec-content a {
+    color: oklch(55% 0.2 260);
+    text-decoration: underline;
+}
+
+.spec-content a:hover {
+    opacity: 0.7;
+}
+
+.spec-content strong {
+    font-weight: 600;
+}

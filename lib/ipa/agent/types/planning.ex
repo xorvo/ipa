@@ -42,7 +42,6 @@ defmodule Ipa.Agent.Types.Planning do
   @impl true
   def generate_prompt(context) do
     task = context[:task] || %{}
-    workspace_path = context[:workspace]
 
     # Handle both struct and map access for task
     spec = get_field(task, :spec) || %{}

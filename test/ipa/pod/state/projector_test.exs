@@ -32,8 +32,9 @@ defmodule Ipa.Pod.State.ProjectorTest do
 
       assert new_state.task_id == "task-123"
       assert new_state.title == "Test Task"
-      assert new_state.spec.description == "Description"
-      assert new_state.spec.requirements == ["req1"]
+      # Description is now stored as content
+      assert new_state.spec.content == "Description"
+      assert new_state.spec.generation_status == :idle
       assert new_state.phase == :spec_clarification
     end
   end
@@ -42,19 +43,19 @@ defmodule Ipa.Pod.State.ProjectorTest do
     test "SpecUpdated updates spec fields" do
       state = %State{
         task_id: "task-123",
-        spec: %{description: "old", requirements: ["old"]}
+        spec: %{content: "old", workspace_path: nil, generation_status: :idle, approved?: false}
       }
 
       event = %SpecUpdated{
         task_id: "task-123",
-        description: "new",
-        requirements: ["new1", "new2"]
+        content: "# New Spec\n\nUpdated content",
+        workspace_path: "/tmp/workspaces/task-123"
       }
 
       new_state = Projector.apply(state, event)
 
-      assert new_state.spec.description == "new"
-      assert new_state.spec.requirements == ["new1", "new2"]
+      assert new_state.spec.content == "# New Spec\n\nUpdated content"
+      assert new_state.spec.workspace_path == "/tmp/workspaces/task-123"
     end
 
     test "SpecApproved marks spec as approved" do

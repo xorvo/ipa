@@ -74,6 +74,8 @@ defmodule Ipa.Pod.State.Projector do
   defp task_event?(%Ipa.Pod.Events.TaskCreated{}), do: true
   defp task_event?(%Ipa.Pod.Events.SpecUpdated{}), do: true
   defp task_event?(%Ipa.Pod.Events.SpecApproved{}), do: true
+  defp task_event?(%Ipa.Pod.Events.SpecGenerationStarted{}), do: true
+  defp task_event?(%Ipa.Pod.Events.SpecGenerationCompleted{}), do: true
   defp task_event?(%Ipa.Pod.Events.PlanCreated{}), do: true
   defp task_event?(%Ipa.Pod.Events.PlanUpdated{}), do: true
   defp task_event?(%Ipa.Pod.Events.PlanApproved{}), do: true

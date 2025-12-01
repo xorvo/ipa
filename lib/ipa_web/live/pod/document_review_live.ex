@@ -1,13 +1,12 @@
 defmodule IpaWeb.Pod.DocumentReviewLive do
   @moduledoc """
-  LiveView for reviewing documents (Spec, Plan, Report) with inline commenting.
+  LiveView for reviewing documents (Spec, Plan, Report) with threaded discussions.
 
   Features:
-  - Read-only document display with line numbers
-  - Text selection to attach comments
-  - Threaded comment discussions
-  - Mark threads as resolved/reopen
-  - Real-time updates via PubSub
+  - Document preview with text selection for comments
+  - Threaded comments (human feedback) and questions (agent clarifications)
+  - Resolve threads to exclude from future agent interactions
+  - Spec generation via AI agent
   """
   use IpaWeb, :live_view
 
@@ -15,8 +14,6 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
   alias Ipa.Pod.State
 
   require Logger
-
-  @valid_doc_types ~w(spec plan report)a
 
   @impl true
   def mount(%{"task_id" => task_id, "doc_type" => doc_type_str}, _session, socket) do
@@ -30,25 +27,7 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
             Manager.subscribe(task_id)
           end
 
-          document_content = get_document_content(state, doc_type)
-          review_threads = State.get_review_threads(state, doc_type)
-
-          socket =
-            socket
-            |> assign(task_id: task_id)
-            |> assign(doc_type: doc_type)
-            |> assign(state: state)
-            |> assign(document_content: document_content)
-            |> assign(document_lines: split_into_lines(document_content))
-            |> assign(review_threads: review_threads)
-            |> assign(selected_text: nil)
-            |> assign(selection_anchor: nil)
-            |> assign(comment_input: "")
-            |> assign(active_thread_id: nil)
-            |> assign(reply_input: "")
-            |> assign(show_resolved: false)
-
-          {:ok, socket}
+          {:ok, init_assigns(socket, task_id, doc_type, state)}
 
         {:error, :not_found} ->
           {:ok,
@@ -64,6 +43,34 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
     end
   end
 
+  defp init_assigns(socket, task_id, doc_type, state) do
+    document_content = get_document_content(state, doc_type)
+    review_threads = State.get_review_threads(state, doc_type)
+    generation_status = get_in(state.spec, [:generation_status]) || :idle
+    related_agents = get_related_agents(state, doc_type)
+
+    socket
+    |> assign(:task_id, task_id)
+    |> assign(:doc_type, doc_type)
+    |> assign(:state, state)
+    |> assign(:document_content, document_content)
+    |> assign(:review_threads, review_threads)
+    |> assign(:related_agents, related_agents)
+    # Text selection for comments (needs state because it comes from JS hook)
+    |> assign(:selected_text, nil)
+    |> assign(:selection_anchor, nil)
+    # Thread interaction
+    |> assign(:active_thread_id, nil)
+    # UI state
+    |> assign(:show_resolved, false)
+    |> assign(:questions_collapsed, false)
+    |> assign(:agent_history_expanded, false)
+    # Spec generation
+    |> assign(:generation_status, generation_status)
+    # Agent detail modal
+    |> assign(:selected_agent_id, nil)
+  end
+
   defp parse_doc_type("spec"), do: :spec
   defp parse_doc_type("plan"), do: :plan
   defp parse_doc_type("report"), do: :report
@@ -71,196 +78,41 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
 
   defp get_document_content(state, :spec) do
     spec = state.spec || %{}
-
-    description = spec[:description] || spec["description"] || ""
-    requirements = spec[:requirements] || spec["requirements"] || []
-    acceptance_criteria = spec[:acceptance_criteria] || spec["acceptance_criteria"] || []
-
-    """
-    # Specification
-
-    ## Description
-
-    #{description}
-
-    ## Requirements
-
-    #{format_list(requirements)}
-
-    ## Acceptance Criteria
-
-    #{format_list(acceptance_criteria)}
-    """
+    content = spec[:content] || spec["content"]
+    if content && content != "", do: content, else: nil
   end
 
-  defp get_document_content(state, :plan) do
-    plan = state.plan
+  defp get_document_content(state, :plan), do: state.plan
+  defp get_document_content(_state, :report), do: nil
 
-    if plan do
-      workstreams = plan[:workstreams] || plan["workstreams"] || []
-      steps = plan[:steps] || plan["steps"] || []
-
-      workstreams_md =
-        workstreams
-        |> Enum.map(fn ws ->
-          id = ws[:id] || ws["id"]
-          title = ws[:title] || ws["title"]
-          desc = ws[:description] || ws["description"]
-          deps = ws[:dependencies] || ws["dependencies"] || []
-          deps_str = if Enum.empty?(deps), do: "None", else: Enum.join(deps, ", ")
-
-          """
-          ### #{id}: #{title}
-
-          #{desc}
-
-          **Dependencies:** #{deps_str}
-          """
-        end)
-        |> Enum.join("\n")
-
-      steps_md =
-        if Enum.empty?(steps) do
-          ""
-        else
-          steps_list =
-            steps
-            |> Enum.with_index(1)
-            |> Enum.map(fn {step, i} ->
-              step_text = if is_binary(step), do: step, else: step[:description] || step["description"] || inspect(step)
-              "#{i}. #{step_text}"
-            end)
-            |> Enum.join("\n")
-
-          """
-          ## Steps
-
-          #{steps_list}
-          """
-        end
-
-      """
-      # Plan
-
-      ## Workstreams
-
-      #{workstreams_md}
-
-      #{steps_md}
-      """
-    else
-      "# Plan\n\nNo plan has been created yet."
-    end
-  end
-
-  defp get_document_content(_state, :report) do
-    "# Final Report\n\nNo report available yet."
-  end
-
-  defp format_list([]), do: "_No items_"
-
-  defp format_list(items) do
-    items
-    |> Enum.map(fn item ->
-      text = if is_binary(item), do: item, else: item[:text] || item["text"] || inspect(item)
-      "- #{text}"
-    end)
-    |> Enum.join("\n")
-  end
-
-  defp split_into_lines(content) when is_binary(content) do
-    content
-    |> String.split("\n")
-    |> Enum.with_index(1)
-    |> Enum.map(fn {line, num} -> %{number: num, content: line} end)
-  end
-
-  defp split_into_lines(_), do: []
-
-  # Real-time updates
-  @impl true
-  def handle_info({:event_appended, task_id, _event}, socket)
-      when task_id == socket.assigns.task_id do
-    reload_state(socket)
-  end
-
-  def handle_info({:state_updated, _task_id, new_state}, socket) when not is_nil(new_state) do
-    doc_type = socket.assigns.doc_type
-    document_content = get_document_content(new_state, doc_type)
-    review_threads = State.get_review_threads(new_state, doc_type)
-
-    {:noreply,
-     socket
-     |> assign(state: new_state)
-     |> assign(document_content: document_content)
-     |> assign(document_lines: split_into_lines(document_content))
-     |> assign(review_threads: review_threads)}
-  end
-
-  def handle_info(_msg, socket), do: {:noreply, socket}
-
-  defp reload_state(socket) do
-    task_id = socket.assigns.task_id
-    doc_type = socket.assigns.doc_type
-
-    case Manager.get_state_from_events(task_id) do
-      {:ok, state} ->
-        document_content = get_document_content(state, doc_type)
-        review_threads = State.get_review_threads(state, doc_type)
-
-        {:noreply,
-         socket
-         |> assign(state: state)
-         |> assign(document_content: document_content)
-         |> assign(document_lines: split_into_lines(document_content))
-         |> assign(review_threads: review_threads)}
-
-      _ ->
-        {:noreply, socket}
-    end
-  end
-
-  # Event handlers
+  # ============================================================================
+  # Event Handlers
+  # ============================================================================
 
   @impl true
   def handle_event("text_selected", params, socket) do
-    selected_text = params["text"]
-    surrounding_text = params["surrounding"]
-    line_start = params["lineStart"] |> parse_int(1)
-    line_end = params["lineEnd"] |> parse_int(line_start)
-
     anchor = %{
-      selected_text: selected_text,
-      surrounding_text: surrounding_text,
-      line_start: line_start,
-      line_end: line_end
+      selected_text: params["text"],
+      surrounding_text: params["surrounding"],
+      line_start: params["lineStart"] || 1,
+      line_end: params["lineEnd"] || params["lineStart"] || 1
     }
 
     {:noreply,
      socket
-     |> assign(selected_text: selected_text)
-     |> assign(selection_anchor: anchor)}
+     |> assign(:selected_text, params["text"])
+     |> assign(:selection_anchor, anchor)}
   end
 
   def handle_event("clear_selection", _params, socket) do
     {:noreply,
      socket
-     |> assign(selected_text: nil)
-     |> assign(selection_anchor: nil)
-     |> assign(comment_input: "")}
+     |> assign(:selected_text, nil)
+     |> assign(:selection_anchor, nil)}
   end
 
-  def handle_event("update_comment", %{"value" => value}, socket) do
-    {:noreply, assign(socket, comment_input: value)}
-  end
-
-  def handle_event("post_comment", _params, socket) do
-    %{
-      task_id: task_id,
-      doc_type: doc_type,
-      selection_anchor: anchor,
-      comment_input: content
-    } = socket.assigns
+  def handle_event("post_comment", %{"content" => content}, socket) do
+    %{task_id: task_id, doc_type: doc_type, selection_anchor: anchor} = socket.assigns
 
     if String.trim(content) != "" and anchor do
       params = %{
@@ -280,9 +132,8 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
              ) do
         {:noreply,
          socket
-         |> assign(selected_text: nil)
-         |> assign(selection_anchor: nil)
-         |> assign(comment_input: "")
+         |> assign(:selected_text, nil)
+         |> assign(:selection_anchor, nil)
          |> put_flash(:info, "Comment posted")}
       else
         {:error, reason} ->
@@ -294,66 +145,41 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
   end
 
   def handle_event("select_thread", %{"id" => thread_id}, socket) do
-    {:noreply, assign(socket, active_thread_id: thread_id)}
+    new_active =
+      if socket.assigns.active_thread_id == thread_id, do: nil, else: thread_id
+
+    {:noreply, assign(socket, :active_thread_id, new_active)}
   end
 
-  def handle_event("close_thread", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(active_thread_id: nil)
-     |> assign(reply_input: "")}
-  end
+  def handle_event("post_reply", %{"thread_id" => thread_id, "content" => content}, socket) do
+    %{task_id: task_id, doc_type: doc_type} = socket.assigns
 
-  def handle_event("update_reply", %{"value" => value}, socket) do
-    {:noreply, assign(socket, reply_input: value)}
-  end
-
-  def handle_event("post_reply", _params, socket) do
-    %{
-      task_id: task_id,
-      doc_type: doc_type,
-      active_thread_id: thread_id,
-      reply_input: content,
-      review_threads: threads
-    } = socket.assigns
-
-    if String.trim(content) != "" and thread_id do
-      # Get the original thread's anchor from the first message
-      thread_messages = Map.get(threads, thread_id, [])
-      first_message = List.first(thread_messages)
-
-      anchor =
-        if first_message && first_message.metadata do
-          first_message.metadata[:document_anchor] || first_message.metadata["document_anchor"]
-        end
-
-      if anchor do
-        params = %{
-          author: "user",
-          content: content,
-          document_type: doc_type,
-          document_anchor: anchor,
-          thread_id: thread_id
+    if String.trim(content) != "" do
+      params = %{
+        author: "user",
+        content: content,
+        document_type: doc_type,
+        thread_id: thread_id,
+        document_anchor: %{
+          selected_text: "[Reply]",
+          surrounding_text: "[Thread reply]",
+          line_start: 0,
+          line_end: 0
         }
+      }
 
-        with :ok <- ensure_pod_running(task_id),
-             {:ok, _version} <-
-               Manager.execute(
-                 task_id,
-                 Ipa.Pod.Commands.CommunicationCommands,
-                 :post_review_comment,
-                 [params]
-               ) do
-          {:noreply,
-           socket
-           |> assign(reply_input: "")
-           |> put_flash(:info, "Reply posted")}
-        else
-          {:error, reason} ->
-            {:noreply, put_flash(socket, :error, "Failed to post reply: #{inspect(reason)}")}
-        end
+      with :ok <- ensure_pod_running(task_id),
+           {:ok, _version} <-
+             Manager.execute(
+               task_id,
+               Ipa.Pod.Commands.CommunicationCommands,
+               :post_review_comment,
+               [params]
+             ) do
+        {:noreply, put_flash(socket, :info, "Reply posted")}
       else
-        {:noreply, put_flash(socket, :error, "Could not find thread anchor")}
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, "Failed to post reply: #{inspect(reason)}")}
       end
     else
       {:noreply, socket}
@@ -363,64 +189,119 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
   def handle_event("resolve_thread", %{"id" => thread_id}, socket) do
     %{task_id: task_id} = socket.assigns
 
-    params = %{
-      thread_id: thread_id,
-      resolved_by: "user"
-    }
-
     with :ok <- ensure_pod_running(task_id),
          {:ok, _version} <-
            Manager.execute(
              task_id,
              Ipa.Pod.Commands.ReviewCommands,
              :resolve_thread,
-             [params]
+             [%{thread_id: thread_id, resolved_by: "user"}]
            ) do
-      {:noreply, put_flash(socket, :info, "Thread resolved")}
+      {:noreply,
+       socket
+       |> assign(:active_thread_id, nil)
+       |> put_flash(:info, "Thread resolved")}
     else
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to resolve: #{inspect(reason)}")}
     end
   end
 
-  def handle_event("reopen_thread", %{"id" => thread_id}, socket) do
-    %{task_id: task_id} = socket.assigns
-
-    params = %{
-      thread_id: thread_id,
-      reopened_by: "user"
-    }
-
-    with :ok <- ensure_pod_running(task_id),
-         {:ok, _version} <-
-           Manager.execute(
-             task_id,
-             Ipa.Pod.Commands.ReviewCommands,
-             :reopen_thread,
-             [params]
-           ) do
-      {:noreply, put_flash(socket, :info, "Thread reopened")}
-    else
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to reopen: #{inspect(reason)}")}
-    end
-  end
-
   def handle_event("toggle_resolved", _params, socket) do
-    {:noreply, assign(socket, show_resolved: !socket.assigns.show_resolved)}
+    {:noreply, assign(socket, :show_resolved, !socket.assigns.show_resolved)}
   end
 
-  defp parse_int(nil, default), do: default
-  defp parse_int(val, _default) when is_integer(val), do: val
+  def handle_event("toggle_questions", _params, socket) do
+    {:noreply, assign(socket, :questions_collapsed, !socket.assigns.questions_collapsed)}
+  end
 
-  defp parse_int(val, default) when is_binary(val) do
-    case Integer.parse(val) do
-      {num, _} -> num
-      :error -> default
+  def handle_event("toggle_agent_history", _params, socket) do
+    {:noreply, assign(socket, :agent_history_expanded, !socket.assigns.agent_history_expanded)}
+  end
+
+  def handle_event("scroll_to_questions", _params, socket) do
+    # Expand questions section and scroll to it via JS hook
+    {:noreply,
+     socket
+     |> assign(:questions_collapsed, false)
+     |> push_event("scroll_to", %{target: "questions-section"})}
+  end
+
+  def handle_event("view_agent", %{"agent-id" => agent_id}, socket) do
+    {:noreply, assign(socket, :selected_agent_id, agent_id)}
+  end
+
+  def handle_event("close_agent_modal", _params, socket) do
+    {:noreply, assign(socket, :selected_agent_id, nil)}
+  end
+
+  def handle_event("generate_spec", %{"input" => input}, socket) do
+    %{task_id: task_id, state: state} = socket.assigns
+
+    cond do
+      String.trim(input) == "" ->
+        {:noreply, put_flash(socket, :error, "Please provide initial requirements")}
+
+      State.spec_approved?(state) ->
+        {:noreply, put_flash(socket, :error, "Spec is already approved")}
+
+      true ->
+        with :ok <- ensure_pod_running(task_id),
+             {:ok, _agent_id} <- Manager.spawn_spec_generator(task_id, input) do
+          {:noreply,
+           socket
+           |> assign(:generation_status, :generating)
+           |> put_flash(:info, "Spec generation started")}
+        else
+          {:error, :generation_in_progress} ->
+            {:noreply, put_flash(socket, :error, "Generation already in progress")}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Failed to start: #{inspect(reason)}")}
+        end
     end
   end
 
-  defp parse_int(_, default), do: default
+  # ============================================================================
+  # PubSub Handlers
+  # ============================================================================
+
+  @impl true
+  def handle_info({:state_updated, _task_id, new_state}, socket) do
+    doc_type = socket.assigns.doc_type
+
+    {:noreply,
+     socket
+     |> assign(:state, new_state)
+     |> assign(:document_content, get_document_content(new_state, doc_type))
+     |> assign(:review_threads, State.get_review_threads(new_state, doc_type))
+     |> assign(:related_agents, get_related_agents(new_state, doc_type))
+     |> assign(:generation_status, get_in(new_state.spec, [:generation_status]) || :idle)}
+  end
+
+  def handle_info({:event_appended, _stream_id, _event}, socket) do
+    case Manager.get_state_from_events(socket.assigns.task_id) do
+      {:ok, new_state} ->
+        doc_type = socket.assigns.doc_type
+
+        {:noreply,
+         socket
+         |> assign(:state, new_state)
+         |> assign(:document_content, get_document_content(new_state, doc_type))
+         |> assign(:review_threads, State.get_review_threads(new_state, doc_type))
+         |> assign(:related_agents, get_related_agents(new_state, doc_type))
+         |> assign(:generation_status, get_in(new_state.spec, [:generation_status]) || :idle)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info(_msg, socket), do: {:noreply, socket}
+
+  # ============================================================================
+  # Helpers
+  # ============================================================================
 
   defp ensure_pod_running(task_id) do
     if Ipa.PodSupervisor.pod_running?(task_id) do
@@ -434,143 +315,248 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
     end
   end
 
+  defp format_doc_type(:spec), do: "Specification"
+  defp format_doc_type(:plan), do: "Plan"
+  defp format_doc_type(:report), do: "Report"
+  defp format_doc_type(other), do: to_string(other)
+
+  defp format_timestamp(unix) when is_integer(unix) do
+    DateTime.from_unix!(unix) |> Calendar.strftime("%b %d, %H:%M")
+  end
+
+  defp format_timestamp(_), do: ""
+
+  defp truncate(nil, _), do: ""
+  defp truncate(str, max) when byte_size(str) <= max, do: str
+  defp truncate(str, max), do: String.slice(str, 0, max) <> "..."
+
+  defp spec_approved?(state), do: State.spec_approved?(state)
+
+  # Get agents related to this document type based on their context
+  # Safely handles agents created before the context field was added
+  defp get_related_agents(state, doc_type) do
+    doc_type_str = to_string(doc_type)
+
+    state.agents
+    |> Enum.filter(fn agent ->
+      # Safely get context, defaulting to empty map for older agents
+      context = Map.get(agent, :context, %{}) || %{}
+      # Check if agent's context matches this document type (handle both atom and string values)
+      agent_doc_type = context[:document_type] || context["document_type"]
+      to_string(agent_doc_type) == doc_type_str
+    end)
+    |> Enum.sort_by(& &1.started_at, :desc)
+  end
+
+  defp format_agent_status(:running), do: {"Running", "badge-info"}
+  defp format_agent_status(:awaiting_input), do: {"Awaiting Input", "badge-accent"}
+  defp format_agent_status(:completed), do: {"Completed", "badge-success"}
+  defp format_agent_status(:failed), do: {"Failed", "badge-error"}
+  defp format_agent_status(:pending_start), do: {"Pending", "badge-warning"}
+  defp format_agent_status(_), do: {"Unknown", "badge-ghost"}
+
+  defp format_agent_type(:spec_generator), do: "Spec Generator"
+  defp format_agent_type(:planning), do: "Planning Agent"
+  defp format_agent_type(:planning_agent), do: "Planning Agent"
+  defp format_agent_type(:workstream), do: "Workstream Agent"
+  defp format_agent_type(type) when is_atom(type), do: type |> Atom.to_string() |> String.replace("_", " ") |> String.capitalize()
+  defp format_agent_type(type), do: to_string(type)
+
+  defp split_threads(threads, show_resolved) do
+    {questions, comments} =
+      Enum.split_with(threads, fn {_id, messages} ->
+        first = List.first(messages)
+        first && first.metadata && (first.metadata[:is_question] || first.metadata["is_question"])
+      end)
+
+    filter_fn = fn {_id, messages} ->
+      resolved? = thread_resolved?(messages)
+      show_resolved or not resolved?
+    end
+
+    {
+      Enum.filter(questions, filter_fn) |> Map.new(),
+      Enum.filter(comments, filter_fn) |> Map.new()
+    }
+  end
+
+  defp thread_resolved?(messages) do
+    first = List.first(messages)
+    !!(first && first.metadata && (first.metadata[:resolved?] || first.metadata["resolved?"]))
+  end
+
+  defp count_unanswered(question_threads) do
+    Enum.count(question_threads, fn {_id, messages} -> not thread_resolved?(messages) end)
+  end
+
+  # ============================================================================
+  # Render
+  # ============================================================================
+
   @impl true
   def render(assigns) do
+    {questions, comments} = split_threads(assigns.review_threads, assigns.show_resolved)
+
+    assigns =
+      assigns
+      |> assign(:questions, questions)
+      |> assign(:comments, comments)
+      |> assign(:unanswered_count, count_unanswered(questions))
+
     ~H"""
     <div class="min-h-screen bg-base-200">
-      <!-- Header -->
       <header class="bg-base-100 shadow-sm border-b border-base-300">
-        <div class="px-4 py-4">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-3">
-              <a href={~p"/pods/#{@task_id}"} class="text-base-content/60 hover:text-base-content">
-                <.icon name="hero-arrow-left" class="w-5 h-5" />
-              </a>
-              <h1 class="text-xl font-semibold text-base-content">
-                Review: {format_doc_type(@doc_type)}
-              </h1>
-              <span class={"badge #{doc_type_badge(@doc_type)}"}>
-                {String.upcase(to_string(@doc_type))}
-              </span>
-            </div>
-            <div class="flex items-center gap-2">
-              <label class="label cursor-pointer gap-2">
-                <span class="label-text text-sm">Show resolved</span>
-                <input
-                  type="checkbox"
-                  class="toggle toggle-sm"
-                  checked={@show_resolved}
-                  phx-click="toggle_resolved"
-                />
-              </label>
-            </div>
+        <div class="px-4 py-3 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <a href={~p"/pods/#{@task_id}"} class="text-base-content/60 hover:text-base-content">
+              <.icon name="hero-arrow-left" class="w-5 h-5" />
+            </a>
+            <h1 class="text-xl font-semibold">{format_doc_type(@doc_type)} Review</h1>
           </div>
+          <label class="label cursor-pointer gap-2">
+            <span class="label-text text-sm">Show resolved</span>
+            <input
+              type="checkbox"
+              class="toggle toggle-sm"
+              checked={@show_resolved}
+              phx-click="toggle_resolved"
+            />
+          </label>
         </div>
       </header>
 
-      <!-- Main Content -->
-      <main class="p-4">
+      <main class="p-4 space-y-4">
+        <!-- AI Workflow Section (Top Priority) -->
+        <%= if @doc_type == :spec and not spec_approved?(@state) do %>
+          <.ai_workflow_section
+            generation_status={@generation_status}
+            related_agents={@related_agents}
+            unanswered_count={@unanswered_count}
+            agent_history_expanded={@agent_history_expanded}
+          />
+        <% else %>
+          <!-- Show agent activity even when spec is approved -->
+          <%= if length(@related_agents) > 0 do %>
+            <.agent_activity_bar related_agents={@related_agents} />
+          <% end %>
+        <% end %>
+
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <!-- Document Panel -->
-          <div class="lg:col-span-2">
+          <div class="lg:col-span-2 space-y-4">
             <div class="card bg-base-100 shadow-sm border border-base-300">
               <div class="card-body p-0">
-                <div class="p-4 border-b border-base-300 flex items-center justify-between">
-                  <h2 class="font-semibold">Document Content</h2>
-                  <span class="text-sm text-base-content/60">
-                    Select text to add a comment
-                  </span>
+                <div class="p-4 border-b border-base-300 flex justify-between items-center">
+                  <h2 class="font-semibold">Document</h2>
+                  <span class="text-sm text-base-content/60">Select text to comment</span>
                 </div>
-                <div
-                  id="document-content"
-                  class="p-4 font-mono text-sm overflow-x-auto"
-                  phx-hook="TextSelection"
-                >
-                  <%= for line <- @document_lines do %>
-                    <div class="flex hover:bg-base-200 group" data-line={line.number}>
-                      <span class="w-12 text-right pr-4 text-base-content/40 select-none flex-shrink-0">
-                        {line.number}
-                      </span>
-                      <span class="flex-1 whitespace-pre-wrap break-words">
-                        <%= if String.trim(line.content) == "" do %>
-                          <br />
-                        <% else %>
-                          {line.content}
-                        <% end %>
-                      </span>
-                      <%= if has_comment_at_line?(@review_threads, line.number) do %>
-                        <span class="ml-2 text-warning flex-shrink-0">
-                          <.icon name="hero-chat-bubble-left" class="w-4 h-4" />
-                        </span>
-                      <% end %>
-                    </div>
-                  <% end %>
-                </div>
+                <%= if @document_content do %>
+                  <div
+                    id="document-content"
+                    class="p-4 font-mono text-sm leading-relaxed overflow-x-auto max-h-[60vh] overflow-y-auto"
+                    phx-hook="TextSelection"
+                  >
+                    <pre class="whitespace-pre-wrap break-words m-0"><%= @document_content %></pre>
+                  </div>
+                <% else %>
+                  <div class="p-8 text-center text-base-content/60">
+                    <.icon name="hero-document" class="w-12 h-12 mx-auto mb-4 opacity-50" />
+                    <p>No content yet. Use the AI generator above to create one.</p>
+                  </div>
+                <% end %>
               </div>
             </div>
 
-            <!-- Comment Input (shown when text is selected) -->
+            <!-- Comment Form (when text selected) -->
             <%= if @selected_text do %>
-              <div class="card bg-base-100 shadow-sm border border-primary mt-4">
+              <div class="card bg-base-100 shadow-sm border border-primary">
                 <div class="card-body">
-                  <div class="flex items-start justify-between">
-                    <h3 class="font-semibold text-sm">Add Comment</h3>
-                    <button
-                      phx-click="clear_selection"
-                      class="btn btn-ghost btn-xs btn-circle"
-                    >
+                  <div class="flex justify-between items-start">
+                    <h3 class="font-semibold">Add Comment</h3>
+                    <button phx-click="clear_selection" class="btn btn-ghost btn-xs btn-circle">
                       <.icon name="hero-x-mark" class="w-4 h-4" />
                     </button>
                   </div>
                   <div class="bg-base-200 rounded p-2 mt-2">
-                    <span class="text-xs text-base-content/60">Selected text:</span>
-                    <p class="text-sm font-mono mt-1 line-clamp-3">{@selected_text}</p>
+                    <span class="text-xs text-base-content/60">Selected:</span>
+                    <p class="text-sm font-mono mt-1 line-clamp-2">{@selected_text}</p>
                   </div>
-                  <textarea
-                    class="textarea textarea-bordered w-full mt-3"
-                    placeholder="Write your comment..."
-                    rows="3"
-                    phx-keyup="update_comment"
-                  ><%= @comment_input %></textarea>
-                  <div class="flex justify-end mt-2">
-                    <button
-                      phx-click="post_comment"
-                      class="btn btn-primary btn-sm"
-                      disabled={String.trim(@comment_input) == ""}
-                    >
-                      Post Comment
-                    </button>
-                  </div>
+                  <form phx-submit="post_comment" class="mt-3">
+                    <textarea
+                      name="content"
+                      class="textarea textarea-bordered w-full"
+                      placeholder="Your comment..."
+                      rows="3"
+                      required
+                    ></textarea>
+                    <div class="flex justify-end mt-2">
+                      <button type="submit" class="btn btn-primary btn-sm">Post Comment</button>
+                    </div>
+                  </form>
                 </div>
               </div>
             <% end %>
           </div>
 
-          <!-- Comments Panel -->
-          <div class="lg:col-span-1">
-            <div class="card bg-base-100 shadow-sm border border-base-300 sticky top-4">
+          <!-- Threads Panel -->
+          <div class="space-y-4" id="threads-panel">
+            <!-- Agent Questions (Priority) -->
+            <%= if map_size(@questions) > 0 do %>
+              <div class="card bg-base-100 shadow-sm border-2 border-warning" id="questions-section">
+                <div class="card-body p-0">
+                  <div
+                    class="p-4 cursor-pointer hover:bg-base-200/50 flex justify-between items-center bg-warning/10"
+                    phx-click="toggle_questions"
+                  >
+                    <h2 class="font-semibold flex items-center gap-2">
+                      <.icon name="hero-question-mark-circle" class="w-5 h-5 text-warning" />
+                      Agent Questions
+                      <%= if @unanswered_count > 0 do %>
+                        <span class="badge badge-warning badge-sm">{@unanswered_count} need response</span>
+                      <% end %>
+                    </h2>
+                    <.icon
+                      name={if @questions_collapsed, do: "hero-chevron-down", else: "hero-chevron-up"}
+                      class="w-4 h-4"
+                    />
+                  </div>
+
+                  <%= unless @questions_collapsed do %>
+                    <div class="px-4 pb-4 space-y-2">
+                      <%= for {thread_id, messages} <- @questions do %>
+                        <.thread_card
+                          thread_id={thread_id}
+                          messages={messages}
+                          active={@active_thread_id == thread_id}
+                        />
+                      <% end %>
+                    </div>
+                  <% end %>
+                </div>
+              </div>
+            <% end %>
+
+            <!-- Comments -->
+            <div class="card bg-base-100 shadow-sm border border-base-300">
               <div class="card-body">
-                <h2 class="font-semibold mb-4 flex items-center gap-2">
+                <h2 class="font-semibold flex items-center gap-2 mb-4">
                   <.icon name="hero-chat-bubble-left-right" class="w-5 h-5" />
                   Comments
-                  <span class="badge badge-sm">{thread_count(@review_threads, @show_resolved)}</span>
+                  <span class="badge badge-sm">{map_size(@comments)}</span>
                 </h2>
 
-                <%= if map_size(@review_threads) == 0 do %>
-                  <div class="text-center py-8 text-base-content/60">
-                    <.icon name="hero-chat-bubble-left" class="w-12 h-12 mx-auto mb-4 opacity-50" />
-                    <p>No comments yet.</p>
-                    <p class="text-sm">Select text in the document to add a comment.</p>
+                <%= if map_size(@comments) == 0 do %>
+                  <div class="text-center py-6 text-base-content/60">
+                    <.icon name="hero-chat-bubble-left" class="w-10 h-10 mx-auto mb-2 opacity-50" />
+                    <p class="text-sm">No comments yet</p>
                   </div>
                 <% else %>
-                  <div class="space-y-3 max-h-[600px] overflow-y-auto">
-                    <%= for {thread_id, messages} <- @review_threads do %>
+                  <div class="space-y-2">
+                    <%= for {thread_id, messages} <- @comments do %>
                       <.thread_card
                         thread_id={thread_id}
                         messages={messages}
                         active={@active_thread_id == thread_id}
-                        show_resolved={@show_resolved}
-                        reply_input={@reply_input}
                       />
                     <% end %>
                   </div>
@@ -580,179 +566,310 @@ defmodule IpaWeb.Pod.DocumentReviewLive do
           </div>
         </div>
       </main>
+
+      <!-- Agent Detail Modal -->
+      <%= if @selected_agent_id do %>
+        <div class="modal modal-open">
+          <div class="modal-box max-w-4xl h-[80vh] p-0 flex flex-col">
+            <div class="flex justify-between items-center p-4 border-b border-base-300">
+              <h3 class="font-bold text-lg">Agent Details</h3>
+              <button phx-click="close_agent_modal" class="btn btn-ghost btn-sm btn-circle">
+                <.icon name="hero-x-mark" class="w-5 h-5" />
+              </button>
+            </div>
+            <div class="flex-1 overflow-hidden">
+              {live_render(@socket, IpaWeb.Pod.AgentDetailLive,
+                id: "agent-detail-#{@selected_agent_id}",
+                session: %{"task_id" => @task_id, "agent_id" => @selected_agent_id}
+              )}
+            </div>
+          </div>
+          <div class="modal-backdrop" phx-click="close_agent_modal"></div>
+        </div>
+      <% end %>
     </div>
     """
   end
 
+  # ============================================================================
+  # Components
+  # ============================================================================
+
+  attr :thread_id, :string, required: true
+  attr :messages, :list, required: true
+  attr :active, :boolean, default: false
+
   defp thread_card(assigns) do
     first_msg = List.first(assigns.messages)
-    is_resolved = first_msg && first_msg.metadata && (first_msg.metadata[:resolved?] || first_msg.metadata["resolved?"])
+    resolved? = thread_resolved?(assigns.messages)
+    reply_count = length(assigns.messages) - 1
+    anchor = first_msg && first_msg.metadata && (first_msg.metadata[:document_anchor] || first_msg.metadata["document_anchor"])
 
-    # Skip resolved threads if not showing them
-    if is_resolved and not assigns.show_resolved do
-      ~H"""
-      """
-    else
-      anchor = if first_msg && first_msg.metadata do
-        first_msg.metadata[:document_anchor] || first_msg.metadata["document_anchor"]
-      end
+    assigns =
+      assigns
+      |> assign(:first_msg, first_msg)
+      |> assign(:resolved?, resolved?)
+      |> assign(:reply_count, reply_count)
+      |> assign(:anchor, anchor)
 
-      assigns =
-        assigns
-        |> assign(:first_msg, first_msg)
-        |> assign(:is_resolved, is_resolved)
-        |> assign(:anchor, anchor)
-        |> assign(:reply_count, length(assigns.messages) - 1)
-
-      ~H"""
-      <div class={"border rounded-lg overflow-hidden #{if @is_resolved, do: "border-success/30 bg-success/5", else: "border-base-300"}"}>
-        <!-- Thread Header -->
-        <div
-          class="p-3 cursor-pointer hover:bg-base-200"
-          phx-click="select_thread"
-          phx-value-id={@thread_id}
-        >
-          <div class="flex items-start justify-between">
-            <div class="flex-1 min-w-0">
-              <%= if @is_resolved do %>
-                <span class="badge badge-success badge-sm mb-1">Resolved</span>
-              <% end %>
-              <p class="text-sm font-medium truncate">{@first_msg && @first_msg.author}</p>
-              <p class="text-xs text-base-content/60 line-clamp-2 mt-1">
-                {truncate(@first_msg && @first_msg.content, 100)}
-              </p>
-            </div>
-            <%= if @reply_count > 0 do %>
-              <span class="badge badge-sm badge-ghost ml-2">{@reply_count} replies</span>
+    ~H"""
+    <div class={"border rounded-lg overflow-hidden #{if @resolved?, do: "border-success/30 bg-success/5", else: "border-base-300"}"}>
+      <div
+        class="p-3 cursor-pointer hover:bg-base-200"
+        phx-click="select_thread"
+        phx-value-id={@thread_id}
+      >
+        <div class="flex items-start justify-between">
+          <div class="flex-1 min-w-0">
+            <%= if @resolved? do %>
+              <span class="badge badge-success badge-xs mb-1">Resolved</span>
             <% end %>
+            <p class="text-sm font-medium">{@first_msg && @first_msg.author}</p>
+            <p class="text-xs text-base-content/70 line-clamp-2 mt-1">
+              {truncate(@first_msg && @first_msg.content, 120)}
+            </p>
           </div>
-          <%= if @anchor do %>
-            <div class="mt-2 text-xs text-base-content/50">
-              Lines {@anchor[:line_start] || @anchor["line_start"]}-{@anchor[:line_end] || @anchor["line_end"]}
-            </div>
+          <%= if @reply_count > 0 do %>
+            <span class="badge badge-ghost badge-sm ml-2">{@reply_count}</span>
           <% end %>
         </div>
-
-        <!-- Expanded Thread -->
-        <%= if @active do %>
-          <div class="border-t border-base-300 bg-base-200/50">
-            <!-- All messages in thread -->
-            <div class="p-3 space-y-3 max-h-64 overflow-y-auto">
-              <%= for msg <- @messages do %>
-                <div class="bg-base-100 rounded p-2">
-                  <div class="flex items-center justify-between">
-                    <span class="text-sm font-medium">{msg.author}</span>
-                    <span class="text-xs text-base-content/50">
-                      {format_timestamp(msg.posted_at)}
-                    </span>
-                  </div>
-                  <p class="text-sm mt-1">{msg.content}</p>
-                </div>
-              <% end %>
-            </div>
-
-            <!-- Reply Input -->
-            <div class="p-3 border-t border-base-300">
-              <textarea
-                class="textarea textarea-bordered textarea-sm w-full"
-                placeholder="Write a reply..."
-                rows="2"
-                phx-keyup="update_reply"
-              ><%= @reply_input %></textarea>
-              <div class="flex items-center justify-between mt-2">
-                <div class="flex gap-2">
-                  <%= if @is_resolved do %>
-                    <button
-                      phx-click="reopen_thread"
-                      phx-value-id={@thread_id}
-                      class="btn btn-ghost btn-xs"
-                    >
-                      Reopen
-                    </button>
-                  <% else %>
-                    <button
-                      phx-click="resolve_thread"
-                      phx-value-id={@thread_id}
-                      class="btn btn-ghost btn-xs text-success"
-                    >
-                      <.icon name="hero-check" class="w-3 h-3" /> Resolve
-                    </button>
-                  <% end %>
-                </div>
-                <div class="flex gap-2">
-                  <button
-                    phx-click="close_thread"
-                    class="btn btn-ghost btn-xs"
-                  >
-                    Close
-                  </button>
-                  <button
-                    phx-click="post_reply"
-                    class="btn btn-primary btn-xs"
-                    disabled={String.trim(@reply_input) == ""}
-                  >
-                    Reply
-                  </button>
-                </div>
-              </div>
-            </div>
+        <%= if @anchor && @anchor[:line_start] && @anchor[:line_start] > 0 do %>
+          <div class="text-xs text-base-content/50 mt-1">
+            Line {@anchor[:line_start] || @anchor["line_start"]}
           </div>
         <% end %>
       </div>
-      """
-    end
+
+      <%= if @active do %>
+        <div class="border-t border-base-300 bg-base-200/50">
+          <div class="p-3 space-y-2 max-h-64 overflow-y-auto">
+            <%= for msg <- @messages do %>
+              <div class="bg-base-100 rounded p-2">
+                <div class="flex justify-between items-center">
+                  <span class="text-sm font-medium">{msg.author}</span>
+                  <span class="text-xs text-base-content/50">{format_timestamp(msg.posted_at)}</span>
+                </div>
+                <p class="text-sm mt-1 whitespace-pre-wrap">{msg.content}</p>
+              </div>
+            <% end %>
+          </div>
+
+          <form phx-submit="post_reply" class="p-3 border-t border-base-300">
+            <input type="hidden" name="thread_id" value={@thread_id} />
+            <textarea
+              name="content"
+              class="textarea textarea-bordered textarea-sm w-full"
+              placeholder="Write a reply..."
+              rows="2"
+              required
+            ></textarea>
+            <div class="flex justify-between items-center mt-2">
+              <%= unless @resolved? do %>
+                <button
+                  type="button"
+                  phx-click="resolve_thread"
+                  phx-value-id={@thread_id}
+                  class="btn btn-ghost btn-xs text-success"
+                >
+                  <.icon name="hero-check" class="w-3 h-3" /> Resolve
+                </button>
+              <% else %>
+                <div></div>
+              <% end %>
+              <button type="submit" class="btn btn-primary btn-xs">Reply</button>
+            </div>
+          </form>
+        </div>
+      <% end %>
+    </div>
+    """
   end
 
-  defp format_doc_type(:spec), do: "Specification"
-  defp format_doc_type(:plan), do: "Plan"
-  defp format_doc_type(:report), do: "Final Report"
-  defp format_doc_type(other), do: to_string(other)
+  # AI Workflow Section - Original layout with smaller text and collapsible history
+  attr :generation_status, :atom, required: true
+  attr :related_agents, :list, required: true
+  attr :unanswered_count, :integer, required: true
+  attr :agent_history_expanded, :boolean, required: true
 
-  defp doc_type_badge(:spec), do: "badge-warning"
-  defp doc_type_badge(:plan), do: "badge-info"
-  defp doc_type_badge(:report), do: "badge-success"
-  defp doc_type_badge(_), do: "badge-ghost"
-
-  defp has_comment_at_line?(threads, line_number) do
-    Enum.any?(threads, fn {_thread_id, messages} ->
-      first_msg = List.first(messages)
-
-      if first_msg && first_msg.metadata do
-        anchor = first_msg.metadata[:document_anchor] || first_msg.metadata["document_anchor"]
-
-        if anchor do
-          line_start = anchor[:line_start] || anchor["line_start"] || 0
-          line_end = anchor[:line_end] || anchor["line_end"] || line_start
-          line_number >= line_start and line_number <= line_end
-        else
-          false
-        end
-      else
-        false
-      end
+  defp ai_workflow_section(assigns) do
+    active_agent = Enum.find(assigns.related_agents, fn a -> a.status in [:running, :awaiting_input] end)
+    has_completed = Enum.any?(assigns.related_agents, fn a -> a.status == :completed end)
+    # Completed agents for history (exclude currently active)
+    completed_agents = Enum.filter(assigns.related_agents, fn a ->
+      a.status in [:completed, :failed] and (active_agent == nil or a.agent_id != active_agent.agent_id)
     end)
+
+    assigns =
+      assigns
+      |> assign(:active_agent, active_agent)
+      |> assign(:has_completed, has_completed)
+      |> assign(:completed_agents, completed_agents)
+
+    ~H"""
+    <div class="card bg-base-100 shadow-sm border border-primary/20">
+      <div class="card-body p-4">
+        <!-- Header -->
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+            <.icon name="hero-sparkles" class="w-5 h-5 text-primary" />
+          </div>
+          <div class="flex-1">
+            <h3 class="text-sm font-semibold">AI Spec Generator</h3>
+            <p class="text-xs text-base-content/60">
+              <%= if @has_completed, do: "Iterate on your spec with AI assistance", else: "Generate a specification from your requirements" %>
+            </p>
+          </div>
+          <.generation_status_badge status={@generation_status} />
+        </div>
+
+        <!-- Active Agent Status -->
+        <%= if @active_agent do %>
+          <div class={[
+            "rounded-lg px-3 py-3 mt-4",
+            @active_agent.status == :running && "bg-info/10 border border-info/20",
+            @active_agent.status == :awaiting_input && "bg-warning/10 border border-warning/20"
+          ]}>
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <%= if @active_agent.status == :running do %>
+                  <span class="loading loading-spinner loading-sm text-info"></span>
+                  <span class="text-xs font-medium">Generating specification...</span>
+                <% else %>
+                  <.icon name="hero-chat-bubble-left-ellipsis" class="w-4 h-4 text-warning" />
+                  <span class="text-xs">
+                    <span class="font-medium">{@unanswered_count}</span> question(s) need your response
+                  </span>
+                <% end %>
+              </div>
+              <button
+                class="btn btn-ghost btn-xs"
+                phx-click="view_agent"
+                phx-value-agent-id={@active_agent.agent_id}
+              >
+                View <.icon name="hero-arrow-right" class="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+        <% end %>
+
+        <!-- Input Form -->
+        <%= if @generation_status in [:idle, :completed] and @active_agent == nil do %>
+          <form phx-submit="generate_spec" class="mt-4">
+            <label class="text-xs text-base-content/70 mb-1 block">
+              <%= if @has_completed, do: "Describe changes or additional requirements", else: "What should this spec cover?" %>
+            </label>
+            <div class="flex gap-2">
+              <input
+                type="text"
+                name="input"
+                class="input input-bordered input-sm flex-1 text-sm"
+                placeholder={if @has_completed, do: "e.g., Add error handling section...", else: "e.g., A REST API for user management..."}
+                required
+              />
+              <button type="submit" class="btn btn-primary btn-sm gap-1">
+                <.icon name="hero-sparkles" class="w-4 h-4" />
+                <%= if @has_completed, do: "Iterate", else: "Generate" %>
+              </button>
+            </div>
+          </form>
+        <% end %>
+
+        <!-- Previous Runs (Collapsed by default) -->
+        <%= if length(@completed_agents) > 0 do %>
+          <div class="mt-4 pt-3 border-t border-base-200">
+            <button
+              class="flex items-center justify-between w-full text-xs text-base-content/60 hover:text-base-content"
+              phx-click="toggle_agent_history"
+            >
+              <span class="flex items-center gap-1">
+                <.icon name="hero-clock" class="w-3 h-3" />
+                Previous runs ({length(@completed_agents)})
+              </span>
+              <.icon
+                name={if @agent_history_expanded, do: "hero-chevron-up", else: "hero-chevron-down"}
+                class="w-3 h-3"
+              />
+            </button>
+
+            <%= if @agent_history_expanded do %>
+              <div class="mt-2 space-y-1">
+                <%= for agent <- @completed_agents do %>
+                  <% {status_text, badge_class} = format_agent_status(agent.status) %>
+                  <button
+                    class="flex items-center justify-between w-full p-2 rounded hover:bg-base-200 text-left"
+                    phx-click="view_agent"
+                    phx-value-agent-id={agent.agent_id}
+                  >
+                    <div class="flex items-center gap-2">
+                      <span class={"badge badge-xs #{badge_class}"}>{status_text}</span>
+                      <span class="text-xs text-base-content/70">{format_agent_type(agent.agent_type)}</span>
+                    </div>
+                    <span class="text-xs text-base-content/50">
+                      <%= if agent.completed_at do %>
+                        {format_timestamp(agent.completed_at)}
+                      <% end %>
+                    </span>
+                  </button>
+                <% end %>
+              </div>
+            <% end %>
+          </div>
+        <% end %>
+      </div>
+    </div>
+    """
   end
 
-  defp thread_count(threads, show_resolved) do
-    if show_resolved do
-      map_size(threads)
-    else
-      Enum.count(threads, fn {_id, messages} ->
-        first_msg = List.first(messages)
-        not (first_msg && first_msg.metadata && (first_msg.metadata[:resolved?] || first_msg.metadata["resolved?"]))
-      end)
-    end
+  # Compact agent activity bar for when spec is approved
+  attr :related_agents, :list, required: true
+
+  defp agent_activity_bar(assigns) do
+    ~H"""
+    <div class="card bg-base-100 shadow-sm border border-base-300">
+      <div class="card-body py-3 px-4">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm font-medium flex items-center gap-2">
+            <.icon name="hero-cpu-chip" class="w-4 h-4 text-base-content/70" />
+            Agent Activity
+          </h3>
+          <div class="flex flex-wrap gap-2">
+            <%= for agent <- @related_agents do %>
+              <% {status_text, badge_class} = format_agent_status(agent.status) %>
+              <button
+                class={"badge badge-sm #{badge_class} gap-1 cursor-pointer hover:opacity-80"}
+                phx-click="view_agent"
+                phx-value-agent-id={agent.agent_id}
+              >
+                {format_agent_type(agent.agent_type)}
+                <span class="text-xs opacity-70">{status_text}</span>
+              </button>
+            <% end %>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
   end
 
-  defp truncate(nil, _), do: ""
-  defp truncate(str, max) when byte_size(str) <= max, do: str
-  defp truncate(str, max), do: String.slice(str, 0, max) <> "..."
+  # Generation status badge
+  attr :status, :atom, required: true
 
-  defp format_timestamp(unix) when is_integer(unix) do
-    unix
-    |> DateTime.from_unix!()
-    |> Calendar.strftime("%b %d, %H:%M")
+  defp generation_status_badge(assigns) do
+    ~H"""
+    <%= case @status do %>
+      <% :generating -> %>
+        <span class="badge badge-info gap-1">
+          <span class="loading loading-spinner loading-xs"></span>
+          Generating
+        </span>
+      <% :completed -> %>
+        <span class="badge badge-success gap-1">
+          <.icon name="hero-check" class="w-3 h-3" />
+          Generated
+        </span>
+      <% _ -> %>
+        <span class="badge badge-ghost">Ready</span>
+    <% end %>
+    """
   end
-
-  defp format_timestamp(_), do: ""
 end

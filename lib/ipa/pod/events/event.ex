@@ -48,6 +48,8 @@ defmodule Ipa.Pod.Event do
   defp type_to_module("task_created"), do: Ipa.Pod.Events.TaskCreated
   defp type_to_module("spec_updated"), do: Ipa.Pod.Events.SpecUpdated
   defp type_to_module("spec_approved"), do: Ipa.Pod.Events.SpecApproved
+  defp type_to_module("spec_generation_started"), do: Ipa.Pod.Events.SpecGenerationStarted
+  defp type_to_module("spec_generation_completed"), do: Ipa.Pod.Events.SpecGenerationCompleted
   defp type_to_module("plan_created"), do: Ipa.Pod.Events.PlanCreated
   defp type_to_module("plan_updated"), do: Ipa.Pod.Events.PlanUpdated
   defp type_to_module("plan_approved"), do: Ipa.Pod.Events.PlanApproved

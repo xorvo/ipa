@@ -7,6 +7,8 @@ defmodule Ipa.Pod.State.Projections.TaskProjection do
     TaskCreated,
     SpecUpdated,
     SpecApproved,
+    SpecGenerationStarted,
+    SpecGenerationCompleted,
     PlanCreated,
     PlanUpdated,
     PlanApproved
@@ -20,10 +22,9 @@ defmodule Ipa.Pod.State.Projections.TaskProjection do
       | task_id: event.task_id,
         title: event.title,
         spec: %{
-          description: event.description,
-          requirements: event.requirements || [],
-          acceptance_criteria: event.acceptance_criteria || [],
-          external_references: event.external_references || %{},
+          content: event.description,
+          workspace_path: nil,
+          generation_status: :idle,
           approved?: false,
           approved_by: nil,
           approved_at: nil
@@ -36,10 +37,26 @@ defmodule Ipa.Pod.State.Projections.TaskProjection do
   def apply(state, %SpecUpdated{} = event) do
     updated_spec =
       state.spec
-      |> maybe_update(:description, event.description)
-      |> maybe_update(:requirements, event.requirements)
-      |> maybe_update(:acceptance_criteria, event.acceptance_criteria)
-      |> maybe_update(:external_references, event.external_references)
+      |> maybe_update(:content, event.content)
+      |> maybe_update(:workspace_path, event.workspace_path)
+
+    %{state | spec: updated_spec}
+  end
+
+  def apply(state, %SpecGenerationStarted{} = event) do
+    updated_spec =
+      state.spec
+      |> Map.put(:generation_status, :generating)
+      |> maybe_update(:workspace_path, event.workspace_path)
+
+    %{state | spec: updated_spec}
+  end
+
+  def apply(state, %SpecGenerationCompleted{} = event) do
+    updated_spec =
+      state.spec
+      |> Map.put(:generation_status, :ready_for_review)
+      |> maybe_update(:workspace_path, event.workspace_path)
 
     %{state | spec: updated_spec}
   end

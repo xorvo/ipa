@@ -42,13 +42,14 @@ defmodule Ipa.Pod.Commands.TaskCommandsTest do
       }
 
       params = %{
-        description: "Updated description",
-        requirements: ["req1"]
+        content: "# Updated Spec\n\nThis is the spec content.",
+        workspace_path: "/tmp/workspaces/task-123"
       }
 
       assert {:ok, [event]} = TaskCommands.update_spec(state, params)
       assert %SpecUpdated{} = event
-      assert event.description == "Updated description"
+      assert event.content == "# Updated Spec\n\nThis is the spec content."
+      assert event.workspace_path == "/tmp/workspaces/task-123"
     end
 
     test "fails if spec already approved" do

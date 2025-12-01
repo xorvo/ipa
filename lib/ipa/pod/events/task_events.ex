@@ -52,24 +52,20 @@ defmodule Ipa.Pod.Events.TaskCreated do
 end
 
 defmodule Ipa.Pod.Events.SpecUpdated do
-  @moduledoc "Event emitted when the task spec is updated."
+  @moduledoc "Event emitted when the task spec content is updated."
   @behaviour Ipa.Pod.Event
 
   @enforce_keys [:task_id]
   defstruct [
     :task_id,
-    :description,
-    :requirements,
-    :acceptance_criteria,
-    :external_references
+    :content,
+    :workspace_path
   ]
 
   @type t :: %__MODULE__{
           task_id: String.t(),
-          description: String.t() | nil,
-          requirements: [String.t()] | nil,
-          acceptance_criteria: [String.t()] | nil,
-          external_references: map() | nil
+          content: String.t() | nil,
+          workspace_path: String.t() | nil
         }
 
   @impl true
@@ -79,35 +75,104 @@ defmodule Ipa.Pod.Events.SpecUpdated do
   def to_map(%__MODULE__{} = event) do
     %{
       task_id: event.task_id,
-      description: event.description,
-      requirements: event.requirements,
-      acceptance_criteria: event.acceptance_criteria,
-      external_references: event.external_references
+      content: event.content,
+      workspace_path: event.workspace_path
     }
   end
 
   @impl true
   def from_map(data) do
-    # Support both nested spec format and flat format
-    spec_data = get_field(data, :spec)
+    %__MODULE__{
+      task_id: get_field(data, :task_id),
+      content: get_field(data, :content),
+      workspace_path: get_field(data, :workspace_path)
+    }
+  end
 
-    if spec_data && is_map(spec_data) do
-      %__MODULE__{
-        task_id: get_field(data, :task_id),
-        description: get_field(spec_data, :description),
-        requirements: get_field(spec_data, :requirements),
-        acceptance_criteria: get_field(spec_data, :acceptance_criteria),
-        external_references: get_field(spec_data, :external_references)
-      }
-    else
-      %__MODULE__{
-        task_id: get_field(data, :task_id),
-        description: get_field(data, :description),
-        requirements: get_field(data, :requirements),
-        acceptance_criteria: get_field(data, :acceptance_criteria),
-        external_references: get_field(data, :external_references)
-      }
-    end
+  defp get_field(data, key), do: data[key] || data[to_string(key)]
+end
+
+defmodule Ipa.Pod.Events.SpecGenerationStarted do
+  @moduledoc "Event emitted when spec generation is started."
+  @behaviour Ipa.Pod.Event
+
+  @enforce_keys [:task_id, :agent_id]
+  defstruct [
+    :task_id,
+    :agent_id,
+    :workspace_path,
+    :input_content
+  ]
+
+  @type t :: %__MODULE__{
+          task_id: String.t(),
+          agent_id: String.t(),
+          workspace_path: String.t() | nil,
+          input_content: String.t() | nil
+        }
+
+  @impl true
+  def event_type, do: "spec_generation_started"
+
+  @impl true
+  def to_map(%__MODULE__{} = event) do
+    %{
+      task_id: event.task_id,
+      agent_id: event.agent_id,
+      workspace_path: event.workspace_path,
+      input_content: event.input_content
+    }
+  end
+
+  @impl true
+  def from_map(data) do
+    %__MODULE__{
+      task_id: get_field(data, :task_id),
+      agent_id: get_field(data, :agent_id),
+      workspace_path: get_field(data, :workspace_path),
+      input_content: get_field(data, :input_content)
+    }
+  end
+
+  defp get_field(data, key), do: data[key] || data[to_string(key)]
+end
+
+defmodule Ipa.Pod.Events.SpecGenerationCompleted do
+  @moduledoc "Event emitted when spec generation completes."
+  @behaviour Ipa.Pod.Event
+
+  @enforce_keys [:task_id, :agent_id]
+  defstruct [
+    :task_id,
+    :agent_id,
+    :workspace_path
+  ]
+
+  @type t :: %__MODULE__{
+          task_id: String.t(),
+          agent_id: String.t(),
+          workspace_path: String.t() | nil
+        }
+
+  @impl true
+  def event_type, do: "spec_generation_completed"
+
+  @impl true
+  def to_map(%__MODULE__{} = event) do
+    %{
+      task_id: event.task_id,
+      agent_id: event.agent_id,
+      workspace_path: event.workspace_path
+    }
+  end
+
+  @impl true
+  def from_map(data) do
+    %__MODULE__{
+      task_id: get_field(data, :task_id),
+      agent_id: get_field(data, :agent_id),
+      workspace_path: get_field(data, :workspace_path)
+    }
   end
 
   defp get_field(data, key), do: data[key] || data[to_string(key)]

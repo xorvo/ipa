@@ -20,6 +20,14 @@ defmodule Ipa.Pod.Commands.AgentCommands do
 
   @doc """
   Records that an agent has started.
+
+  Params:
+  - agent_id: UUID of the agent (optional, will be generated if not provided)
+  - agent_type: :planning | :workstream | :review | :spec_generator
+  - workstream_id: optional workstream association
+  - workspace_path: path to agent's workspace
+  - context: optional metadata for associating with documents/features
+    e.g., %{document_type: :spec} for spec_generator
   """
   @spec start_agent(State.t(), map()) :: result()
   def start_agent(state, params) do
@@ -30,7 +38,8 @@ defmodule Ipa.Pod.Commands.AgentCommands do
         agent_id: agent_id,
         agent_type: agent_type,
         workstream_id: params[:workstream_id],
-        workspace_path: params[:workspace_path]
+        workspace_path: params[:workspace_path],
+        context: params[:context] || %{}
       }
 
       {:ok, [event]}
@@ -252,8 +261,9 @@ defmodule Ipa.Pod.Commands.AgentCommands do
   defp validate_agent_id(id) when is_binary(id) and byte_size(id) > 0, do: {:ok, id}
   defp validate_agent_id(_), do: {:error, :invalid_agent_id}
 
-  defp validate_agent_type(type) when type in [:planning, :planning_agent, :workstream, :review],
-    do: {:ok, type}
+  defp validate_agent_type(type)
+       when type in [:planning, :planning_agent, :workstream, :review, :spec_generator],
+       do: {:ok, type}
 
   defp validate_agent_type(type) when is_binary(type) do
     case type do
@@ -261,6 +271,7 @@ defmodule Ipa.Pod.Commands.AgentCommands do
       "planning_agent" -> {:ok, :planning_agent}
       "workstream" -> {:ok, :workstream}
       "review" -> {:ok, :review}
+      "spec_generator" -> {:ok, :spec_generator}
       _ -> {:error, :invalid_agent_type}
     end
   end

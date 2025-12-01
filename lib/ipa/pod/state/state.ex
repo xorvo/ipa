@@ -26,10 +26,9 @@ defmodule Ipa.Pod.State do
     :updated_at,
     phase: :spec_clarification,
     spec: %{
-      description: nil,
-      requirements: [],
-      acceptance_criteria: [],
-      external_references: %{},
+      content: nil,
+      workspace_path: nil,
+      generation_status: :idle,
       approved?: false,
       approved_by: nil,
       approved_at: nil
@@ -313,9 +312,16 @@ defmodule Ipa.Pod.State.Notification do
 end
 
 defmodule Ipa.Pod.State.Agent do
-  @moduledoc "Represents an agent instance."
+  @moduledoc """
+  Represents an agent instance.
 
-  @type agent_type :: :planning | :workstream | :review
+  The `context` field stores metadata about the agent's purpose, allowing us to
+  associate agents with specific documents or features. For example:
+  - spec_generator agents have context: %{document_type: :spec}
+  - future review agents might have context: %{document_type: :plan, thread_ids: [...]}
+  """
+
+  @type agent_type :: :planning | :workstream | :review | :spec_generator
   @type status ::
           :pending_start | :running | :awaiting_input | :completed | :failed | :interrupted
 
@@ -330,7 +336,9 @@ defmodule Ipa.Pod.State.Agent do
     :output,
     status: :running,
     interactive: true,
-    conversation_history: []
+    conversation_history: [],
+    # Context for associating agents with documents/features
+    context: %{}
   ]
 
   @type t :: %__MODULE__{
@@ -344,7 +352,8 @@ defmodule Ipa.Pod.State.Agent do
           error: String.t() | nil,
           output: String.t() | nil,
           interactive: boolean(),
-          conversation_history: [map()]
+          conversation_history: [map()],
+          context: map()
         }
 
   @doc "Returns true if agent is running."

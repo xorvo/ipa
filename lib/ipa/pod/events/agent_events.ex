@@ -1,5 +1,11 @@
 defmodule Ipa.Pod.Events.AgentStarted do
-  @moduledoc "Event emitted when an agent is started."
+  @moduledoc """
+  Event emitted when an agent is started.
+
+  The `context` field stores metadata about the agent's purpose, such as
+  which document type it relates to. For example:
+  - spec_generator agents have context: %{document_type: :spec}
+  """
   @behaviour Ipa.Pod.Event
 
   @enforce_keys [:task_id, :agent_id, :agent_type]
@@ -8,17 +14,19 @@ defmodule Ipa.Pod.Events.AgentStarted do
     :agent_id,
     :agent_type,
     :workstream_id,
-    :workspace_path
+    :workspace_path,
+    context: %{}
   ]
 
-  @type agent_type :: :planning | :workstream | :review
+  @type agent_type :: :planning | :workstream | :review | :spec_generator
 
   @type t :: %__MODULE__{
           task_id: String.t(),
           agent_id: String.t(),
           agent_type: agent_type(),
           workstream_id: String.t() | nil,
-          workspace_path: String.t() | nil
+          workspace_path: String.t() | nil,
+          context: map()
         }
 
   @impl true
@@ -31,7 +39,8 @@ defmodule Ipa.Pod.Events.AgentStarted do
       agent_id: event.agent_id,
       agent_type: event.agent_type,
       workstream_id: event.workstream_id,
-      workspace_path: event.workspace_path
+      workspace_path: event.workspace_path,
+      context: event.context || %{}
     }
   end
 
@@ -42,7 +51,8 @@ defmodule Ipa.Pod.Events.AgentStarted do
       agent_id: get_field(data, :agent_id),
       agent_type: normalize_agent_type(get_field(data, :agent_type)),
       workstream_id: get_field(data, :workstream_id),
-      workspace_path: get_field(data, :workspace_path) || get_field(data, :workspace)
+      workspace_path: get_field(data, :workspace_path) || get_field(data, :workspace),
+      context: get_field(data, :context) || %{}
     }
   end
 
@@ -52,11 +62,13 @@ defmodule Ipa.Pod.Events.AgentStarted do
   defp normalize_agent_type(:planning_agent), do: :planning
   defp normalize_agent_type(:workstream), do: :workstream
   defp normalize_agent_type(:review), do: :review
+  defp normalize_agent_type(:spec_generator), do: :spec_generator
   defp normalize_agent_type(:workstream_executor), do: :workstream
   defp normalize_agent_type("planning"), do: :planning
   defp normalize_agent_type("planning_agent"), do: :planning
   defp normalize_agent_type("workstream"), do: :workstream
   defp normalize_agent_type("review"), do: :review
+  defp normalize_agent_type("spec_generator"), do: :spec_generator
   defp normalize_agent_type("workstream_executor"), do: :workstream
 
   defp normalize_agent_type(other) do
@@ -255,6 +267,7 @@ defmodule Ipa.Pod.Events.AgentPendingStart do
   defp normalize_agent_type("planning_agent"), do: :planning_agent
   defp normalize_agent_type("workstream"), do: :workstream
   defp normalize_agent_type("review"), do: :review
+  defp normalize_agent_type("spec_generator"), do: :spec_generator
   defp normalize_agent_type(other), do: String.to_atom(other)
 end
 

@@ -11,6 +11,8 @@ defmodule Ipa.Pod.Commands.TaskCommands do
     TaskCreated,
     SpecUpdated,
     SpecApproved,
+    SpecGenerationStarted,
+    SpecGenerationCompleted,
     PlanCreated,
     PlanUpdated,
     PlanApproved
@@ -39,7 +41,7 @@ defmodule Ipa.Pod.Commands.TaskCommands do
   end
 
   @doc """
-  Updates the task spec.
+  Updates the task spec content (markdown).
   """
   @spec update_spec(State.t(), map()) :: result()
   def update_spec(state, params) do
@@ -53,10 +55,8 @@ defmodule Ipa.Pod.Commands.TaskCommands do
       true ->
         event = %SpecUpdated{
           task_id: state.task_id,
-          description: params[:description],
-          requirements: params[:requirements],
-          acceptance_criteria: params[:acceptance_criteria],
-          external_references: params[:external_references]
+          content: params[:content],
+          workspace_path: params[:workspace_path]
         }
 
         {:ok, [event]}
@@ -80,6 +80,57 @@ defmodule Ipa.Pod.Commands.TaskCommands do
           task_id: state.task_id,
           approved_by: approved_by,
           comment: comment
+        }
+
+        {:ok, [event]}
+    end
+  end
+
+  @doc """
+  Starts spec generation with an agent.
+  """
+  @spec start_spec_generation(State.t(), map()) :: result()
+  def start_spec_generation(state, params) do
+    cond do
+      State.spec_approved?(state) ->
+        {:error, :spec_already_approved}
+
+      state.phase != :spec_clarification ->
+        {:error, :invalid_phase}
+
+      get_in(state.spec, [:generation_status]) == :generating ->
+        {:error, :generation_in_progress}
+
+      true ->
+        event = %SpecGenerationStarted{
+          task_id: state.task_id,
+          agent_id: params[:agent_id] || Ecto.UUID.generate(),
+          workspace_path: params[:workspace_path],
+          input_content: params[:input_content]
+        }
+
+        {:ok, [event]}
+    end
+  end
+
+  @doc """
+  Marks spec generation as complete.
+  Called when the spec generator agent finishes.
+  """
+  @spec complete_spec_generation(State.t(), map()) :: result()
+  def complete_spec_generation(state, params) do
+    cond do
+      state.phase != :spec_clarification ->
+        {:error, :invalid_phase}
+
+      get_in(state.spec, [:generation_status]) != :generating ->
+        {:error, :not_generating}
+
+      true ->
+        event = %SpecGenerationCompleted{
+          task_id: state.task_id,
+          agent_id: params[:agent_id],
+          workspace_path: params[:workspace_path]
         }
 
         {:ok, [event]}

@@ -260,6 +260,15 @@ defmodule Ipa.Pod.WorkspaceManager.AgentFile.ContentBlock do
     )
   end
 
+  @doc """
+  Composes an agent file for a spec generator workspace.
+  Only includes workspace rules since the agent prompt contains all the spec-specific instructions.
+  """
+  @spec compose_for_spec_generator(variables()) :: String.t()
+  def compose_for_spec_generator(variables) do
+    compose([:workspace_rules, :project_context, :task_context], variables)
+  end
+
   # Private functions
 
   defp interpolate_variables(content, variables) do
