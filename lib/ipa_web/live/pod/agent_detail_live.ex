@@ -31,8 +31,6 @@ defmodule IpaWeb.Pod.AgentDetailLive do
       |> assign(show_plan_preview: false)
       |> assign(streaming_output: "")
       |> assign(message_input: "")
-      |> assign(batch_messages: [])
-      |> assign(batch_mode: false)
       |> assign(editor: editor)
       |> assign(todo_items: [])
       |> assign(todos_collapsed: false)
@@ -68,12 +66,12 @@ defmodule IpaWeb.Pod.AgentDetailLive do
     <div class="h-full flex flex-col">
       <%= if @agent do %>
         <!-- Header -->
-        <div class="flex items-center justify-between p-4 border-b border-base-300 bg-base-200">
+        <div class="flex items-center justify-between p-4 border-b border-neutral-content/10 bg-[#161b22]">
           <div class="flex items-center gap-3">
             <.agent_status_indicator status={@agent.status} />
             <div>
               <div class="flex items-center gap-2">
-                <span class="font-semibold text-lg">{format_agent_type(@agent.agent_type)}</span>
+                <span class="font-semibold text-lg text-neutral-content">{format_agent_type(@agent.agent_type)}</span>
                 <%= if @agent.status == :running do %>
                   <span class="loading loading-spinner loading-sm text-info"></span>
                   <span class="badge badge-info badge-sm">LIVE</span>
@@ -84,7 +82,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
                 <% end %>
               </div>
               <%= if @agent.workstream_id do %>
-                <span class="text-sm text-base-content/60 font-mono">
+                <span class="text-sm text-neutral-content/60 font-mono">
                   Workstream: {@agent.workstream_id}
                 </span>
               <% end %>
@@ -92,6 +90,14 @@ defmodule IpaWeb.Pod.AgentDetailLive do
           </div>
 
           <div class="flex items-center gap-2">
+            <%= if @agent.status == :awaiting_input do %>
+              <button
+                phx-click="mark_done"
+                class="btn btn-sm btn-success gap-1"
+              >
+                <.icon name="hero-check" class="w-4 h-4" /> Complete Agent
+              </button>
+            <% end %>
             <%= if @agent.status == :running && Ipa.Agent.Instance.alive?(@agent.agent_id) do %>
               <button
                 phx-click="interrupt_agent"
@@ -125,7 +131,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
     <!-- Main content - Conversation panel -->
         <div class="flex-1 overflow-hidden flex flex-col">
           <!-- Header bar with metadata -->
-          <div class="px-2 py-1 flex flex-col gap-1 border-b border-base-300 bg-base-100 text-xs text-base-content/60 font-mono">
+          <div class="px-2 py-1 flex flex-col gap-1 border-b border-neutral-content/10 bg-[#161b22] text-xs text-neutral-content/60 font-mono">
             <!-- Row 1: Basic info -->
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-3">
@@ -147,7 +153,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
               <div class="flex items-center gap-2">
                 <% conversation = @agent.conversation_history || [] %>
                 <%= if length(conversation) > 0 do %>
-                  <span class="text-base-content/40">{length(conversation)} msgs</span>
+                  <span class="text-neutral-content/40">{length(conversation)} msgs</span>
                 <% end %>
                 <%= if @agent.status == :running do %>
                   <span class="badge badge-xs badge-info gap-1">
@@ -168,7 +174,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
                     <button
                       phx-click="open_in_editor"
                       phx-value-path={@agent.workspace_path}
-                      class="btn btn-ghost btn-xs tooltip tooltip-left"
+                      class="btn btn-ghost btn-xs tooltip tooltip-left font-normal before:font-normal before:text-xs"
                       data-tip={"Open in #{@editor}"}
                     >
                       <.icon name="hero-code-bracket" class="w-3 h-3" />
@@ -176,7 +182,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
                   <% end %>
                   <button
                     phx-click={JS.dispatch("phx:copy", to: "#workspace-path-#{@agent.agent_id}")}
-                    class="btn btn-ghost btn-xs tooltip tooltip-left"
+                    class="btn btn-ghost btn-xs tooltip tooltip-left font-normal before:font-normal before:text-xs"
                     data-tip="Copy path"
                   >
                     <.icon name="hero-clipboard-document" class="w-3 h-3" />
@@ -280,116 +286,39 @@ defmodule IpaWeb.Pod.AgentDetailLive do
 
     <!-- Message input panel for interactive agents -->
         <%= if @agent.status == :awaiting_input do %>
-          <div class="border-t border-base-300 bg-base-100 p-4">
-            <!-- Batch messages preview -->
-            <%= if length(@batch_messages) > 0 do %>
-              <div class="mb-3 space-y-2">
-                <div class="flex items-center justify-between">
-                  <span class="text-sm font-medium text-base-content/70">
-                    Pending messages ({length(@batch_messages)})
-                  </span>
-                  <button
-                    phx-click="clear_batch"
-                    class="btn btn-xs btn-ghost text-error"
-                  >
-                    Clear all
-                  </button>
-                </div>
-                <div class="bg-base-200 rounded-lg p-2 max-h-32 overflow-y-auto space-y-1">
-                  <%= for {msg, idx} <- Enum.with_index(@batch_messages) do %>
-                    <div class="flex items-center gap-2 text-sm">
-                      <span class="badge badge-xs badge-primary">{idx + 1}</span>
-                      <span class="flex-1 truncate">{msg}</span>
-                      <button
-                        phx-click="remove_batch_message"
-                        phx-value-index={idx}
-                        class="btn btn-xs btn-ghost btn-circle text-error"
-                      >
-                        <.icon name="hero-x-mark" class="w-3 h-3" />
-                      </button>
-                    </div>
-                  <% end %>
-                </div>
-              </div>
-            <% end %>
-
-    <!-- Message input form -->
-            <form
-              phx-submit={if @batch_mode, do: "add_to_batch", else: "send_message"}
-              class="flex flex-col gap-3"
-            >
-              <div class="flex gap-2">
-                <textarea
+          <div class="mx-2 mb-2 rounded-lg bg-[#161b22] border border-neutral-content/10 p-2">
+            <form phx-submit="send_message">
+              <div class="flex items-center gap-2 bg-[#0d1117] rounded-md border border-neutral-content/10 focus-within:border-neutral-content/30 transition-colors">
+                <input
+                  type="text"
                   name="message"
                   value={@message_input}
                   phx-change="update_message_input"
-                  class="textarea textarea-bordered flex-1 min-h-[60px]"
-                  placeholder="Type a message to the agent..."
-                  rows="2"
-                ></textarea>
-              </div>
-              <div class="flex items-center justify-between">
-                <div class="flex items-center gap-3">
-                  <label class="flex items-center gap-2 cursor-pointer">
-                    <span class="text-sm text-base-content/70">Batch</span>
-                    <input
-                      type="checkbox"
-                      class="toggle toggle-sm toggle-primary"
-                      checked={@batch_mode}
-                      phx-click="toggle_batch_mode"
-                    />
-                  </label>
-                  <%= if @batch_mode do %>
-                    <span class="text-xs text-base-content/50">
-                      Queue multiple messages
-                    </span>
-                  <% end %>
-                </div>
-                <div class="flex items-center gap-2">
-                  <%= if @batch_mode && length(@batch_messages) > 0 do %>
-                    <button
-                      type="button"
-                      phx-click="send_batch"
-                      class="btn btn-primary btn-sm gap-1"
-                    >
-                      <.icon name="hero-paper-airplane" class="w-4 h-4" />
-                      Send {length(@batch_messages)} messages
-                    </button>
-                  <% end %>
-                  <%= if @batch_mode do %>
-                    <button
-                      type="submit"
-                      class="btn btn-sm btn-outline gap-1"
-                      disabled={@message_input == ""}
-                    >
-                      <.icon name="hero-plus" class="w-4 h-4" /> Add to batch
-                    </button>
-                  <% else %>
-                    <button
-                      type="submit"
-                      class="btn btn-primary btn-sm gap-1"
-                      disabled={@message_input == ""}
-                    >
-                      <.icon name="hero-paper-airplane" class="w-4 h-4" /> Send
-                    </button>
-                  <% end %>
-                  <%= if @plan && is_planning_agent?(@agent) do %>
-                    <button
-                      type="button"
-                      phx-click="show_plan_preview"
-                      class="btn btn-outline btn-sm gap-1"
-                    >
-                      <.icon name="hero-document-text" class="w-4 h-4" /> Preview Plan
-                    </button>
-                  <% end %>
+                  class="flex-1 bg-transparent border-none text-sm text-neutral-content/80 placeholder:text-neutral-content/40 px-3 py-2.5 focus:outline-none"
+                  placeholder="Message the agent"
+                  autocomplete="off"
+                />
+                <%= if @plan && is_planning_agent?(@agent) do %>
                   <button
                     type="button"
-                    phx-click="mark_done"
-                    class="btn btn-success btn-sm gap-1"
+                    phx-click="show_plan_preview"
+                    class="p-2 text-neutral-content/40 hover:text-neutral-content/70 transition-colors"
+                    title="Preview Plan"
                   >
-                    <.icon name="hero-check" class="w-4 h-4" /> Mark Done
+                    <.icon name="hero-document-text" class="w-4 h-4" />
                   </button>
-                </div>
+                <% end %>
+                <button
+                  type="submit"
+                  class={[
+                    "p-2 mr-1 rounded-md transition-colors",
+                    @message_input == "" && "text-neutral-content/30 cursor-not-allowed",
+                    @message_input != "" && "text-info hover:bg-info/10"
+                  ]}
+                  disabled={@message_input == ""}
+                >
+                  <.icon name="hero-paper-airplane" class="w-5 h-5" />
+                </button>
               </div>
             </form>
           </div>
@@ -460,10 +389,10 @@ defmodule IpaWeb.Pod.AgentDetailLive do
           </div>
         <% end %>
       <% else %>
-        <div class="flex-1 flex items-center justify-center">
+        <div class="flex-1 flex items-center justify-center bg-[#0d1117]">
           <div class="text-center">
-            <.icon name="hero-cpu-chip" class="w-12 h-12 text-base-content/30 mx-auto mb-4" />
-            <p class="text-base-content/50">Agent not found</p>
+            <.icon name="hero-cpu-chip" class="w-12 h-12 text-neutral-content/30 mx-auto mb-4" />
+            <p class="text-neutral-content/50">Agent not found</p>
           </div>
         </div>
       <% end %>
@@ -540,31 +469,8 @@ defmodule IpaWeb.Pod.AgentDetailLive do
     {:noreply, assign(socket, message_input: message)}
   end
 
-  def handle_event("toggle_batch_mode", _params, socket) do
-    {:noreply, assign(socket, batch_mode: !socket.assigns.batch_mode)}
-  end
-
   def handle_event("toggle_todos_collapsed", _params, socket) do
     {:noreply, assign(socket, todos_collapsed: !socket.assigns.todos_collapsed)}
-  end
-
-  def handle_event("add_to_batch", %{"message" => message}, socket) do
-    if String.trim(message) != "" do
-      batch_messages = socket.assigns.batch_messages ++ [message]
-      {:noreply, assign(socket, batch_messages: batch_messages, message_input: "")}
-    else
-      {:noreply, socket}
-    end
-  end
-
-  def handle_event("remove_batch_message", %{"index" => index}, socket) do
-    idx = String.to_integer(index)
-    batch_messages = List.delete_at(socket.assigns.batch_messages, idx)
-    {:noreply, assign(socket, batch_messages: batch_messages)}
-  end
-
-  def handle_event("clear_batch", _params, socket) do
-    {:noreply, assign(socket, batch_messages: [], message_input: "")}
   end
 
   def handle_event("send_message", %{"message" => message}, socket) do
@@ -589,55 +495,6 @@ defmodule IpaWeb.Pod.AgentDetailLive do
 
         {:error, reason} ->
           {:noreply, put_flash(socket, :error, "Failed to send message: #{inspect(reason)}")}
-      end
-    end
-  end
-
-  def handle_event("send_batch", _params, socket) do
-    batch_messages = socket.assigns.batch_messages
-
-    if length(batch_messages) == 0 do
-      {:noreply, socket}
-    else
-      agent_id = socket.assigns.agent_id
-      task_id = socket.assigns.task_id
-
-      Logger.info("Sending batch of #{length(batch_messages)} messages to agent",
-        agent_id: agent_id
-      )
-
-      # Combine all batch messages into one message with clear separation
-      combined_message =
-        batch_messages
-        |> Enum.with_index(1)
-        |> Enum.map(fn {msg, idx} -> "Comment #{idx}:\n#{msg}" end)
-        |> Enum.join("\n\n---\n\n")
-
-      # Generate a batch_id for tracking
-      batch_id = Ecto.UUID.generate()
-
-      # Record the batch message in the event store
-      Ipa.Pod.Manager.send_agent_message(task_id, agent_id, combined_message, %{
-        sent_by: "user",
-        batch_id: batch_id
-      })
-
-      # Send the combined message to the agent
-      case Ipa.Agent.send_message(agent_id, combined_message) do
-        :ok ->
-          {:noreply,
-           assign(socket,
-             batch_messages: [],
-             batch_mode: false,
-             message_input: "",
-             streaming_output: ""
-           )}
-
-        {:error, :not_awaiting_input} ->
-          {:noreply, put_flash(socket, :warning, "Agent is not waiting for input")}
-
-        {:error, reason} ->
-          {:noreply, put_flash(socket, :error, "Failed to send batch: #{inspect(reason)}")}
       end
     end
   end
@@ -1012,16 +869,16 @@ defmodule IpaWeb.Pod.AgentDetailLive do
       |> Map.put(:in_progress, in_progress)
 
     ~H"""
-    <div class="border-t border-base-300 bg-[#161b22] px-4 py-2">
+    <div class="mx-2 mb-2 rounded-lg bg-[#161b22] border border-neutral-content/10">
       <!-- Clickable Header with progress -->
       <div
-        class="flex items-center justify-between cursor-pointer select-none hover:bg-white/5 -mx-4 px-4 py-1 rounded transition-colors"
+        class="flex items-center justify-between cursor-pointer select-none hover:bg-white/5 px-3 py-2 rounded-lg transition-colors"
         phx-click="toggle_todos_collapsed"
       >
         <div class="flex items-center gap-2">
           <span class={["text-neutral-content/40 text-xs transition-transform", !@collapsed && "rotate-90"]}>›</span>
           <span class="text-neutral-content/60 text-xs">☰</span>
-          <span class="text-xs font-medium text-neutral-content/80">Tasks</span>
+          <span class="text-xs font-medium text-neutral-content/80">Todos</span>
           <span class="text-xs text-neutral-content/50">{@completed_count}/{@total_count}</span>
           <!-- Show current task inline when collapsed -->
           <%= if @collapsed && @in_progress do %>
@@ -1041,10 +898,10 @@ defmodule IpaWeb.Pod.AgentDetailLive do
 
       <!-- Collapsible content -->
       <%= unless @collapsed do %>
-        <div class="mt-2">
+        <div class="px-3 pb-2">
           <!-- Current task (in progress) -->
           <%= if @in_progress do %>
-            <div class="flex items-center gap-2 py-1 px-2 rounded bg-info/10 border border-info/20 mb-2">
+            <div class="flex items-center gap-2 py-1 px-2 rounded bg-info/10 border border-info/20 mb-2 mt-1">
               <span class="loading loading-spinner loading-xs text-info"></span>
               <span class="text-xs text-info/90 truncate flex-1">{@in_progress.active_form || @in_progress.content}</span>
             </div>
@@ -1145,7 +1002,7 @@ defmodule IpaWeb.Pod.AgentDetailLive do
   defp status_color(:completed), do: "bg-success"
   defp status_color(:failed), do: "bg-error"
   defp status_color(:interrupted), do: "bg-warning"
-  defp status_color(_), do: "bg-base-300"
+  defp status_color(_), do: "bg-neutral-content/30"
 
   defp status_badge_class(:completed), do: "badge-success"
   defp status_badge_class(:failed), do: "badge-error"

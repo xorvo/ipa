@@ -33,7 +33,6 @@ defmodule IpaWeb.Pod.AgentPanelLive do
       socket
       |> assign(task_id: task_id)
       |> assign(agents: [])
-      |> assign(expanded_agents: MapSet.new())
       |> assign(streaming_outputs: %{})
       |> assign(selected_agent_id: selected_agent_id)
 
@@ -156,7 +155,6 @@ defmodule IpaWeb.Pod.AgentPanelLive do
             <%= for agent <- @pending_agents do %>
               <.agent_card
                 agent={agent}
-                expanded={true}
                 streaming_output={Map.get(@streaming_outputs, agent.agent_id, "")}
               />
             <% end %>
@@ -172,7 +170,6 @@ defmodule IpaWeb.Pod.AgentPanelLive do
             <%= for agent <- @running_agents do %>
               <.agent_card
                 agent={agent}
-                expanded={true}
                 streaming_output={Map.get(@streaming_outputs, agent.agent_id, "")}
               />
             <% end %>
@@ -188,7 +185,6 @@ defmodule IpaWeb.Pod.AgentPanelLive do
             <%= for agent <- @awaiting_agents do %>
               <.agent_card
                 agent={agent}
-                expanded={true}
                 streaming_output={Map.get(@streaming_outputs, agent.agent_id, "")}
               />
             <% end %>
@@ -204,7 +200,6 @@ defmodule IpaWeb.Pod.AgentPanelLive do
             <%= for agent <- @completed_agents do %>
               <.agent_card
                 agent={agent}
-                expanded={MapSet.member?(@expanded_agents, agent.agent_id)}
                 streaming_output={Map.get(@streaming_outputs, agent.agent_id, "")}
               />
             <% end %>
@@ -218,7 +213,7 @@ defmodule IpaWeb.Pod.AgentPanelLive do
           <!-- Backdrop click handler -->
           <div class="absolute inset-0" phx-click="close_agent_detail"></div>
           <!-- Modal content -->
-          <div class="relative bg-base-100 rounded-xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden">
+          <div class="relative bg-[#0d1117] rounded-xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden">
             <!-- Agent Detail LiveView -->
             {live_render(@socket, IpaWeb.Pod.AgentDetailLive,
               id: "agent-detail-#{@selected_agent_id}",
@@ -236,19 +231,6 @@ defmodule IpaWeb.Pod.AgentPanelLive do
   # ============================================================================
 
   @impl true
-  def handle_event("toggle_agent", %{"agent_id" => agent_id}, socket) do
-    expanded_agents = socket.assigns.expanded_agents
-
-    new_expanded =
-      if MapSet.member?(expanded_agents, agent_id) do
-        MapSet.delete(expanded_agents, agent_id)
-      else
-        MapSet.put(expanded_agents, agent_id)
-      end
-
-    {:noreply, assign(socket, expanded_agents: new_expanded)}
-  end
-
   def handle_event("view_agent_detail", %{"agent_id" => agent_id}, socket) do
     Logger.debug("Opening agent detail view for #{agent_id}")
     task_id = socket.assigns.task_id
@@ -561,21 +543,9 @@ defmodule IpaWeb.Pod.AgentPanelLive do
                 <.icon name="hero-arrow-path" class="w-3 h-3" /> Restart
               </button>
             <% end %>
-
-            <button
-              phx-click="toggle_agent"
-              phx-value-agent_id={@agent.agent_id}
-              class="btn btn-xs btn-ghost btn-circle"
-            >
-              <%= if @expanded do %>
-                <.icon name="hero-chevron-up" class="w-4 h-4" />
-              <% else %>
-                <.icon name="hero-chevron-down" class="w-4 h-4" />
-              <% end %>
-            </button>
           </div>
         </div>
-        
+
     <!-- Status bar -->
         <div class="flex items-center gap-4 text-xs text-base-content/50 mt-2 font-mono">
           <span class="flex items-center gap-1">
@@ -595,45 +565,15 @@ defmodule IpaWeb.Pod.AgentPanelLive do
             </span>
           <% end %>
         </div>
-        
-    <!-- Expanded content -->
-        <%= if @expanded do %>
-          <div class="mt-4 space-y-4">
-            <!-- Tool calls (compact view) -->
-            <% tool_calls = Map.get(@agent, :tool_calls, []) %>
-            <%= if length(tool_calls) > 0 do %>
-              <div>
-                <h4 class="font-medium text-sm mb-2 flex items-center gap-2">
-                  <.icon name="hero-wrench-screwdriver" class="w-4 h-4" /> Tool Calls
-                  <span class="badge badge-xs badge-ghost">{length(tool_calls)}</span>
-                </h4>
-                <div class="flex flex-wrap gap-2">
-                  <%= for tool <- Enum.take(tool_calls, 10) do %>
-                    <span class={"badge badge-sm gap-1 #{if tool.status == :completed, do: "badge-success", else: "badge-warning"}"}>
-                      {tool.name}
-                      <%= if tool.status == :running do %>
-                        <span class="loading loading-spinner loading-xs"></span>
-                      <% end %>
-                    </span>
-                  <% end %>
-                  <%= if length(tool_calls) > 10 do %>
-                    <span class="badge badge-sm badge-ghost">+{length(tool_calls) - 10} more</span>
-                  <% end %>
-                </div>
-              </div>
-            <% end %>
-            
-            
-    <!-- Error -->
-            <%= if @agent.error do %>
-              <div class="alert alert-error shadow-lg">
-                <.icon name="hero-exclamation-triangle" class="w-5 h-5" />
-                <div>
-                  <h4 class="font-bold">Agent Error</h4>
-                  <p class="text-sm">{@agent.error}</p>
-                </div>
-              </div>
-            <% end %>
+
+        <!-- Error (always visible for failed agents) -->
+        <%= if @agent.error do %>
+          <div class="alert alert-error shadow-lg mt-3">
+            <.icon name="hero-exclamation-triangle" class="w-5 h-5" />
+            <div>
+              <h4 class="font-bold">Agent Error</h4>
+              <p class="text-sm">{@agent.error}</p>
+            </div>
           </div>
         <% end %>
       </div>
