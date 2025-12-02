@@ -391,6 +391,277 @@ defmodule Ipa.Pod.ClaudeMdTemplatesTest do
     end
   end
 
+  describe "generate_workstream_level/3 with tracker items" do
+    setup %{task_id: task_id} do
+      # Create workstreams
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workstream_created",
+          %{
+            workstream_id: "ws-backend",
+            title: "Backend Implementation",
+            spec: "Implement the backend API",
+            dependencies: [],
+            estimated_hours: 8
+          },
+          actor_id: "scheduler"
+        )
+
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workstream_created",
+          %{
+            workstream_id: "ws-frontend",
+            title: "Frontend Implementation",
+            spec: "Build the UI components",
+            dependencies: ["ws-backend"],
+            estimated_hours: 6
+          },
+          actor_id: "scheduler"
+        )
+
+      # Create a tracker with items assigned to workstreams
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "tracker_created",
+          %{
+            phases: [
+              %{
+                phase_id: "phase-1",
+                name: "Setup",
+                summary: "Initial setup phase",
+                order: 0,
+                items: [
+                  %{
+                    item_id: "item-1",
+                    summary: "Set up database schema",
+                    workstream_id: "ws-backend",
+                    status: :todo
+                  },
+                  %{
+                    item_id: "item-2",
+                    summary: "Configure authentication",
+                    workstream_id: "ws-backend",
+                    status: :todo
+                  }
+                ]
+              },
+              %{
+                phase_id: "phase-2",
+                name: "Implementation",
+                summary: "Core implementation phase",
+                order: 1,
+                items: [
+                  %{
+                    item_id: "item-3",
+                    summary: "Build API endpoints",
+                    workstream_id: "ws-backend",
+                    status: :todo
+                  },
+                  %{
+                    item_id: "item-4",
+                    summary: "Create login form",
+                    workstream_id: "ws-frontend",
+                    status: :todo
+                  },
+                  %{
+                    item_id: "item-5",
+                    summary: "Create dashboard",
+                    workstream_id: "ws-frontend",
+                    status: :todo
+                  }
+                ]
+              }
+            ]
+          },
+          actor_id: "planner"
+        )
+
+      # Restart manager to pick up new events
+      stop_manager(task_id)
+      {:ok, _} = Manager.start_link(task_id: task_id)
+
+      :ok
+    end
+
+    test "includes tracker items assigned to the workstream", %{task_id: task_id} do
+      {:ok, content} = ClaudeMdTemplates.generate_workstream_level(task_id, "ws-backend")
+
+      # Should contain the tracker items section
+      assert content =~ "Your Tracker Items"
+
+      # Should contain items assigned to ws-backend
+      assert content =~ "Set up database schema"
+      assert content =~ "Configure authentication"
+      assert content =~ "Build API endpoints"
+
+      # Should contain item IDs
+      assert content =~ "item-1"
+      assert content =~ "item-2"
+      assert content =~ "item-3"
+
+      # Should show phase names
+      assert content =~ "Setup"
+      assert content =~ "Implementation"
+
+      # Should NOT contain items from ws-frontend
+      refute content =~ "Create login form"
+      refute content =~ "Create dashboard"
+      refute content =~ "item-4"
+      refute content =~ "item-5"
+    end
+
+    test "includes tracker update instructions", %{task_id: task_id} do
+      {:ok, content} = ClaudeMdTemplates.generate_workstream_level(task_id, "ws-backend")
+
+      # Should include instructions for updating tracker items
+      assert content =~ "tracker_update.json"
+      assert content =~ "How to Update Tracker Items"
+
+      # Should explain status values
+      assert content =~ "todo"
+      assert content =~ "wip"
+      assert content =~ "done"
+      assert content =~ "blocked"
+    end
+
+    test "includes warning about updating tracker before finishing", %{task_id: task_id} do
+      {:ok, content} = ClaudeMdTemplates.generate_workstream_level(task_id, "ws-backend")
+
+      # Should emphasize updating tracker
+      assert content =~ "CRITICAL"
+      assert content =~ "Update Tracker Before Finishing"
+      assert content =~ "ALL your tracker items are marked as `done`"
+    end
+
+    test "shows different tracker items for different workstreams", %{task_id: task_id} do
+      {:ok, backend_content} = ClaudeMdTemplates.generate_workstream_level(task_id, "ws-backend")
+      {:ok, frontend_content} = ClaudeMdTemplates.generate_workstream_level(task_id, "ws-frontend")
+
+      # Backend should have 3 items
+      assert backend_content =~ "Set up database schema"
+      assert backend_content =~ "Configure authentication"
+      assert backend_content =~ "Build API endpoints"
+      refute backend_content =~ "Create login form"
+
+      # Frontend should have 2 items
+      assert frontend_content =~ "Create login form"
+      assert frontend_content =~ "Create dashboard"
+      refute frontend_content =~ "Set up database schema"
+      refute frontend_content =~ "Build API endpoints"
+    end
+
+    test "handles workstream with no tracker items" do
+      # Create a task with a tracker that has no items for a specific workstream
+      task_id = "task-no-tracker-#{System.unique_integer([:positive, :monotonic])}"
+      {:ok, ^task_id} = EventStore.start_stream("task", task_id)
+
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "task_created",
+          %{title: "Test task", description: "Test", created_by: "user-123"},
+          actor_id: "user-123"
+        )
+
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workstream_created",
+          %{
+            workstream_id: "ws-empty",
+            title: "Empty Workstream",
+            spec: "No tracker items",
+            dependencies: [],
+            estimated_hours: 1
+          },
+          actor_id: "scheduler"
+        )
+
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "tracker_created",
+          %{
+            phases: [
+              %{
+                phase_id: "phase-other",
+                name: "Other Phase",
+                order: 0,
+                items: [
+                  %{
+                    item_id: "item-other",
+                    summary: "Item for another workstream",
+                    workstream_id: "ws-other",
+                    status: :todo
+                  }
+                ]
+              }
+            ]
+          },
+          actor_id: "planner"
+        )
+
+      {:ok, _state_pid} = Manager.start_link(task_id: task_id)
+
+      {:ok, content} = ClaudeMdTemplates.generate_workstream_level(task_id, "ws-empty")
+
+      # Should NOT contain tracker items section header (no items for this workstream)
+      refute content =~ "Your Tracker Items"
+      # Should NOT contain instructions on how to update tracker items (the section is hidden)
+      refute content =~ "How to Update Tracker Items"
+      # Should NOT list the other workstream's items
+      refute content =~ "item-other"
+      refute content =~ "Item for another workstream"
+
+      # Cleanup
+      stop_manager(task_id)
+    end
+
+    test "handles task with no tracker at all" do
+      # Create a task without any tracker
+      task_id = "task-no-tracker-#{System.unique_integer([:positive, :monotonic])}"
+      {:ok, ^task_id} = EventStore.start_stream("task", task_id)
+
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "task_created",
+          %{title: "Test task", description: "Test", created_by: "user-123"},
+          actor_id: "user-123"
+        )
+
+      {:ok, _} =
+        EventStore.append(
+          task_id,
+          "workstream_created",
+          %{
+            workstream_id: "ws-no-tracker",
+            title: "Workstream",
+            spec: "No tracker exists",
+            dependencies: [],
+            estimated_hours: 1
+          },
+          actor_id: "scheduler"
+        )
+
+      {:ok, _state_pid} = Manager.start_link(task_id: task_id)
+
+      {:ok, content} = ClaudeMdTemplates.generate_workstream_level(task_id, "ws-no-tracker")
+
+      # Should NOT contain tracker items section header
+      refute content =~ "Your Tracker Items"
+      # Should NOT contain instructions on how to update tracker items
+      refute content =~ "How to Update Tracker Items"
+
+      # Cleanup
+      stop_manager(task_id)
+    end
+  end
+
   # Helper to stop manager by task_id
   defp stop_manager(task_id) do
     case Registry.lookup(Ipa.PodRegistry, {:manager, task_id}) do

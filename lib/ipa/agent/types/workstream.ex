@@ -86,8 +86,9 @@ defmodule Ipa.Agent.Types.Workstream do
   end
 
   @impl true
-  def handle_completion(result, context) do
-    workspace = result[:workspace]
+  def handle_completion(_result, context) do
+    # Workspace is in context (set when agent was started), not in result
+    workspace = context[:workspace]
     task_id = context[:task_id] || context[:task][:task_id]
     workstream_id = context[:workstream_id]
 
@@ -96,6 +97,9 @@ defmodule Ipa.Agent.Types.Workstream do
       workstream_id: workstream_id,
       workspace: workspace
     )
+
+    # Process tracker updates if the file exists
+    process_tracker_updates(task_id, workstream_id, workspace)
 
     # Check for completion marker
     if workstream_complete?(workspace) do
@@ -180,4 +184,89 @@ defmodule Ipa.Agent.Types.Workstream do
 
     {:error, :no_completion_marker}
   end
+
+  # Process tracker_update.json if it exists in the workspace
+  defp process_tracker_updates(task_id, workstream_id, nil) do
+    Logger.debug("No workspace path, skipping tracker updates",
+      task_id: task_id,
+      workstream_id: workstream_id
+    )
+  end
+
+  defp process_tracker_updates(task_id, workstream_id, workspace) do
+    tracker_file = Path.join(workspace, "tracker_update.json")
+
+    case File.read(tracker_file) do
+      {:ok, content} ->
+        case Jason.decode(content) do
+          {:ok, %{"updates" => updates}} when is_list(updates) ->
+            Logger.info("Processing tracker updates from agent",
+              task_id: task_id,
+              workstream_id: workstream_id,
+              update_count: length(updates)
+            )
+
+            Enum.each(updates, fn update ->
+              item_id = update["item_id"]
+              status = normalize_status_string(update["status"])
+
+              if item_id && status do
+                case Ipa.Pod.Commands.TrackerCommands.update_item_status(
+                       task_id,
+                       item_id,
+                       status,
+                       workstream_id
+                     ) do
+                  :ok ->
+                    Logger.info("Updated tracker item status",
+                      task_id: task_id,
+                      item_id: item_id,
+                      status: status
+                    )
+
+                  {:error, reason} ->
+                    Logger.warning("Failed to update tracker item",
+                      task_id: task_id,
+                      item_id: item_id,
+                      reason: inspect(reason)
+                    )
+                end
+              end
+            end)
+
+            # Clean up the tracker file after processing
+            File.rm(tracker_file)
+
+          {:ok, _invalid} ->
+            Logger.warning("Invalid tracker_update.json format",
+              task_id: task_id,
+              workstream_id: workstream_id
+            )
+
+          {:error, decode_error} ->
+            Logger.warning("Failed to parse tracker_update.json",
+              task_id: task_id,
+              workstream_id: workstream_id,
+              error: inspect(decode_error)
+            )
+        end
+
+      {:error, :enoent} ->
+        # File doesn't exist - that's fine, not all agents will have tracker updates
+        Logger.debug("No tracker_update.json found", workspace: workspace)
+
+      {:error, reason} ->
+        Logger.warning("Failed to read tracker_update.json",
+          task_id: task_id,
+          workstream_id: workstream_id,
+          reason: inspect(reason)
+        )
+    end
+  end
+
+  defp normalize_status_string("todo"), do: :todo
+  defp normalize_status_string("wip"), do: :wip
+  defp normalize_status_string("done"), do: :done
+  defp normalize_status_string("blocked"), do: :blocked
+  defp normalize_status_string(_), do: nil
 end

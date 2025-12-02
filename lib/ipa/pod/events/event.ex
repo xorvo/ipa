@@ -85,6 +85,19 @@ defmodule Ipa.Pod.Event do
   defp type_to_module("review_thread_reopened"), do: Ipa.Pod.Events.ReviewThreadReopened
   # alias to PhaseChanged
   defp type_to_module("phase_transitioned"), do: Ipa.Pod.Events.PhaseChanged
+  # Action approval events (generic approval system)
+  defp type_to_module("action_approval_requested"), do: Ipa.Pod.Events.ActionApprovalRequested
+  defp type_to_module("action_approval_granted"), do: Ipa.Pod.Events.ActionApprovalGranted
+  defp type_to_module("action_approval_rejected"), do: Ipa.Pod.Events.ActionApprovalRejected
+  # Tracker events
+  defp type_to_module("tracker_created"), do: Ipa.Pod.Events.TrackerCreated
+  defp type_to_module("tracker_phase_added"), do: Ipa.Pod.Events.TrackerPhaseAdded
+  defp type_to_module("tracker_item_added"), do: Ipa.Pod.Events.TrackerItemAdded
+  defp type_to_module("tracker_item_updated"), do: Ipa.Pod.Events.TrackerItemUpdated
+  defp type_to_module("tracker_item_removed"), do: Ipa.Pod.Events.TrackerItemRemoved
+  defp type_to_module("tracker_item_status_changed"), do: Ipa.Pod.Events.TrackerItemStatusChanged
+  defp type_to_module("tracker_item_comment_added"), do: Ipa.Pod.Events.TrackerItemCommentAdded
+  defp type_to_module("tracker_phase_eta_updated"), do: Ipa.Pod.Events.TrackerPhaseEtaUpdated
   # Fallback for unknown events - just return the raw data wrapped
   defp type_to_module(unknown), do: raise("Unknown event type: #{unknown}")
 end

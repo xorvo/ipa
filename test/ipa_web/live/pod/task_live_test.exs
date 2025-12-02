@@ -684,12 +684,12 @@ defmodule IpaWeb.Pod.TaskLiveTest do
 
       {:ok, view, html} = live(conn, ~p"/pods/#{task_id}")
 
-      # Should show approve button
-      assert html =~ "Approve Spec"
+      # Should show approve button (button text is "Approve" with title "Approve Specification")
+      assert html =~ "approve_spec"
 
       # Click approve
       view
-      |> element("button", "Approve Spec")
+      |> element("button[phx-click=approve_spec]")
       |> render_click()
 
       # Wait for state update to propagate back via PubSub

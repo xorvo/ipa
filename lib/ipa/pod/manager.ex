@@ -34,6 +34,7 @@ defmodule Ipa.Pod.Manager do
   alias Ipa.Pod.State.Projector
   alias Ipa.Pod.Machine.Evaluator
   alias Ipa.Pod.WorkspaceManager
+  alias Ipa.Pod.ClaudeMdTemplates
 
   alias Ipa.Pod.Commands.{
     PhaseCommands,
@@ -1073,8 +1074,8 @@ defmodule Ipa.Pod.Manager do
   end
 
   defp start_agent_for_workstream(state, context) do
-    # Create workspace for the workstream agent
-    workspace_path = create_workstream_workspace(state.task_id, context.workstream_id)
+    # Create workspace for the workstream agent with generated CLAUDE.md
+    workspace_path = create_workstream_workspace(state, context.workstream_id)
 
     # Add workspace to context for the agent
     context_with_workspace = Map.put(context, :workspace, workspace_path)
@@ -1106,16 +1107,23 @@ defmodule Ipa.Pod.Manager do
     end
   end
 
-  defp create_workstream_workspace(task_id, workstream_id) do
+  defp create_workstream_workspace(state, workstream_id) do
+    task_id = state.task_id
+
     # Ensure base workspace exists
     ensure_base_workspace(task_id)
 
     # Generate workspace name for workstream using workstream_id
     workspace_name = WorkspaceManager.generate_workspace_name(nil, workstream_id)
 
+    # Generate CLAUDE.md content with full context including tracker items
+    # NOTE: Pass state directly to avoid GenServer self-call deadlock
+    agent_file_content = generate_workstream_claude_md(state, workstream_id)
+
     case WorkspaceManager.create_sub_workspace(task_id, workspace_name, %{
            workstream_id: workstream_id,
-           purpose: :workstream
+           purpose: :workstream,
+           agent_file_content: agent_file_content
          }) do
       {:ok, path} ->
         Logger.debug("Created workstream workspace",
@@ -1132,6 +1140,33 @@ defmodule Ipa.Pod.Manager do
 
       {:error, reason} ->
         raise "Failed to create workstream workspace: #{inspect(reason)}"
+    end
+  end
+
+  # Generate CLAUDE.md content for workstream agent
+  # Uses generate_workstream_level_from_state to avoid GenServer self-call deadlock
+  defp generate_workstream_claude_md(state, workstream_id) do
+    case ClaudeMdTemplates.generate_workstream_level_from_state(state, workstream_id) do
+      {:ok, content} ->
+        content
+
+      {:error, reason} ->
+        Logger.warning("Failed to generate workstream CLAUDE.md, using fallback",
+          task_id: state.task_id,
+          workstream_id: workstream_id,
+          reason: inspect(reason)
+        )
+
+        # Fallback to basic content block if template generation fails
+        Ipa.Pod.WorkspaceManager.AgentFile.ContentBlock.compose_for_sub_workspace(%{
+          task_id: state.task_id,
+          task_title: state.title || "Task #{state.task_id}",
+          task_spec: "No specification provided",
+          workstream_id: workstream_id,
+          workstream_title: workstream_id,
+          workstream_spec: "No specification provided",
+          workstream_dependencies: []
+        })
     end
   end
 

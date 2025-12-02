@@ -83,7 +83,7 @@ defmodule Ipa.AgentTest do
       assert prompt =~ "Test Task"
       assert prompt =~ "Build a REST API"
       assert prompt =~ "workstreams"
-      assert prompt =~ "workstreams_plan.json"
+      assert prompt =~ "output.json"
     end
 
     test "Planning handles missing spec gracefully" do

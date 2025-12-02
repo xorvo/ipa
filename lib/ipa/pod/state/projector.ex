@@ -15,7 +15,9 @@ defmodule Ipa.Pod.State.Projector do
     WorkstreamProjection,
     CommunicationProjection,
     AgentProjection,
-    ReviewProjection
+    ReviewProjection,
+    ActionApprovalProjection,
+    TrackerProjection
   }
 
   @doc """
@@ -58,6 +60,8 @@ defmodule Ipa.Pod.State.Projector do
       communication_event?(event) -> CommunicationProjection.apply(state, event)
       agent_event?(event) -> AgentProjection.apply(state, event)
       review_event?(event) -> ReviewProjection.apply(state, event)
+      action_approval_event?(event) -> ActionApprovalProjection.apply(state, event)
+      tracker_event?(event) -> TrackerProjection.apply(state, event)
       true -> state
     end
   end
@@ -116,4 +120,19 @@ defmodule Ipa.Pod.State.Projector do
   defp review_event?(%Ipa.Pod.Events.ReviewThreadResolved{}), do: true
   defp review_event?(%Ipa.Pod.Events.ReviewThreadReopened{}), do: true
   defp review_event?(_), do: false
+
+  defp action_approval_event?(%Ipa.Pod.Events.ActionApprovalRequested{}), do: true
+  defp action_approval_event?(%Ipa.Pod.Events.ActionApprovalGranted{}), do: true
+  defp action_approval_event?(%Ipa.Pod.Events.ActionApprovalRejected{}), do: true
+  defp action_approval_event?(_), do: false
+
+  defp tracker_event?(%Ipa.Pod.Events.TrackerCreated{}), do: true
+  defp tracker_event?(%Ipa.Pod.Events.TrackerPhaseAdded{}), do: true
+  defp tracker_event?(%Ipa.Pod.Events.TrackerItemAdded{}), do: true
+  defp tracker_event?(%Ipa.Pod.Events.TrackerItemUpdated{}), do: true
+  defp tracker_event?(%Ipa.Pod.Events.TrackerItemRemoved{}), do: true
+  defp tracker_event?(%Ipa.Pod.Events.TrackerItemStatusChanged{}), do: true
+  defp tracker_event?(%Ipa.Pod.Events.TrackerItemCommentAdded{}), do: true
+  defp tracker_event?(%Ipa.Pod.Events.TrackerPhaseEtaUpdated{}), do: true
+  defp tracker_event?(_), do: false
 end

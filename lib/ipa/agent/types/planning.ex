@@ -162,6 +162,26 @@ defmodule Ipa.Agent.Types.Planning do
           }
         ]
       },
+      "tracker": {
+        "phases": [
+          {
+            "phase_id": "phase-1",
+            "name": "Phase name",
+            "summary": "Brief one-line summary of what this phase achieves",
+            "description": "Detailed description of the phase goals and scope",
+            "eta": "2024-12-31",
+            "order": 0,
+            "items": [
+              {
+                "item_id": "item-1",
+                "summary": "Expected outcome description",
+                "workstream_id": "ws-1",
+                "status": "todo"
+              }
+            ]
+          }
+        ]
+      },
       "new_comments": [
         {
           "thread_id": "existing-thread-id-if-replying",
@@ -177,8 +197,17 @@ defmodule Ipa.Agent.Types.Planning do
     ```
 
     - `updated_content`: The complete plan with summary and workstreams
+    - `tracker`: Progress tracker with phases and expected outcomes (items)
+      - Each phase has a name, summary, description, optional ETA, and order for display
+      - `summary`: Brief one-line description of the phase
+      - `description`: More detailed explanation of the phase goals and scope
+      - Each item (expected outcome) MUST belong to exactly ONE workstream (workstream_id)
+      - Item statuses: "todo", "wip", "done", "blocked"
+      - Items track high-level deliverables, not implementation details
     - `new_comments`: Replies to existing user comment threads (use thread_id from feedback). Empty array if none.
     - `questions`: New questions for the user. Empty array if none.
+
+    IMPORTANT: Each tracker item must be assigned to exactly ONE workstream. A workstream can own multiple items, but items cannot be shared.
 
     Note: It is perfectly acceptable to output just ONE workstream if the task doesn't benefit from splitting.
 
@@ -352,16 +381,40 @@ defmodule Ipa.Agent.Types.Planning do
       )
     end
 
-    # 2. Process new_comments -> post as review comment replies
+    # 2. Process tracker -> emit tracker_created event
+    tracker = output["tracker"]
+    process_tracker(task_id, tracker)
+
+    # 3. Process new_comments -> post as review comment replies
     new_comments = output["new_comments"] || []
     process_new_comments(task_id, new_comments)
 
-    # 3. Process questions -> post as new review threads
+    # 4. Process questions -> post as new review threads
     questions = output["questions"] || []
     process_questions(task_id, questions)
 
     :ok
   end
+
+  # Process the tracker data and emit tracker_created event
+  defp process_tracker(_task_id, nil), do: :ok
+
+  defp process_tracker(task_id, tracker) when is_map(tracker) do
+    phases = tracker["phases"] || []
+
+    if length(phases) > 0 do
+      Logger.info("Creating tracker",
+        task_id: task_id,
+        phase_count: length(phases)
+      )
+
+      Ipa.Pod.Commands.TrackerCommands.create_tracker(task_id, phases, "planning_agent")
+    else
+      :ok
+    end
+  end
+
+  defp process_tracker(_task_id, _), do: :ok
 
   # Post agent's replies to existing comment threads
   defp process_new_comments(task_id, comments) do

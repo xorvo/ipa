@@ -179,11 +179,42 @@ defmodule Ipa.Pod.ClaudeMdTemplates do
   @spec generate_workstream_level(task_id(), workstream_id(), keyword()) ::
           {:ok, content()} | {:error, term()}
   def generate_workstream_level(task_id, workstream_id, opts \\ []) do
-    with {:ok, task_state} <- Ipa.Pod.Manager.get_state(task_id),
-         {:ok, workstream} <- get_workstream_from_state(task_state, workstream_id),
+    with {:ok, task_state} <- Ipa.Pod.Manager.get_state(task_id) do
+      generate_workstream_level_from_state(task_state, workstream_id, opts)
+    end
+  end
+
+  @doc """
+  Generates workstream-level CLAUDE.md from an already-loaded state.
+
+  This variant avoids a GenServer call to get state, making it safe to call
+  from within the Manager GenServer itself (e.g., during workspace creation).
+
+  ## Parameters
+
+  - `task_state` - The task state struct (already loaded)
+  - `workstream_id` - Workstream UUID
+  - `opts` - Optional keyword list (same as generate_workstream_level/3)
+
+  ## Returns
+
+  Same as `generate_workstream_level/3`
+
+  ## Examples
+
+      # From within Manager GenServer
+      {:ok, content} = ClaudeMdTemplates.generate_workstream_level_from_state(
+        state,
+        "ws-1"
+      )
+  """
+  @spec generate_workstream_level_from_state(map(), workstream_id(), keyword()) ::
+          {:ok, content()} | {:error, term()}
+  def generate_workstream_level_from_state(task_state, workstream_id, opts \\ []) do
+    with {:ok, workstream} <- get_workstream_from_state(task_state, workstream_id),
          {:ok, template} <- load_template(@workstream_template) do
       # Build context from task state, workstream, and opts
-      context = build_workstream_context(task_id, task_state, workstream, opts)
+      context = build_workstream_context(task_state.task_id, task_state, workstream, opts)
 
       # Render template
       try do
@@ -193,7 +224,7 @@ defmodule Ipa.Pod.ClaudeMdTemplates do
         error ->
           Logger.error("Template rendering failed",
             error: inspect(error),
-            task_id: task_id,
+            task_id: task_state.task_id,
             workstream_id: workstream_id
           )
 
@@ -277,6 +308,9 @@ defmodule Ipa.Pod.ClaudeMdTemplates do
         workstream.workstream_id in (ws.dependencies || [])
       end)
 
+    # Get tracker items assigned to this workstream
+    tracker_items = get_tracker_items_for_workstream(task_state, workstream.workstream_id)
+
     %{
       task_id: task_id,
       task_title: task_state.title,
@@ -290,9 +324,33 @@ defmodule Ipa.Pod.ClaudeMdTemplates do
       dependencies: opts[:dependencies] || workstream.dependencies || [],
       related_workstreams: related_workstreams,
       dependent_workstreams: dependent_workstreams,
+      tracker_items: tracker_items,
       repo_url: opts[:repo_url] || get_repo_url_from_config(),
       branch: opts[:branch] || "main"
     }
+  end
+
+  # Get tracker items assigned to a specific workstream
+  defp get_tracker_items_for_workstream(task_state, workstream_id) do
+    case task_state.tracker do
+      nil ->
+        []
+
+      tracker ->
+        tracker.phases
+        |> Enum.flat_map(fn phase ->
+          phase.items
+          |> Enum.filter(fn item -> item.workstream_id == workstream_id end)
+          |> Enum.map(fn item ->
+            %{
+              item_id: item.item_id,
+              phase_name: phase.name,
+              summary: item.summary,
+              status: item.status
+            }
+          end)
+        end)
+    end
   end
 
   # Extract workstream from task state

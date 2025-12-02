@@ -83,7 +83,7 @@ defmodule IpaWeb.Pod.TaskLive do
      |> assign(selected_workstream_id: selected_workstream_id)}
   end
 
-  @valid_tabs ~w(overview workstreams agents communications events)a
+  @valid_tabs ~w(overview workstreams tracker agents communications events)a
   defp parse_tab(nil), do: :overview
 
   defp parse_tab(tab_str) when is_binary(tab_str) do
@@ -496,6 +496,32 @@ defmodule IpaWeb.Pod.TaskLive do
     {:noreply, push_patch(socket, to: build_url(socket, workstream: workstream_id))}
   end
 
+  # Approve tracker modification request
+  def handle_event("approve_tracker_request", %{"request_id" => request_id}, socket) do
+    %{task_id: task_id} = socket.assigns
+
+    case Ipa.Pod.Commands.ActionApprovalCommands.grant_approval(task_id, request_id, "user") do
+      :ok ->
+        {:noreply, put_flash(socket, :info, "Request approved and action executed")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to approve: #{inspect(reason)}")}
+    end
+  end
+
+  # Reject tracker modification request
+  def handle_event("reject_tracker_request", %{"request_id" => request_id}, socket) do
+    %{task_id: task_id} = socket.assigns
+
+    case Ipa.Pod.Commands.ActionApprovalCommands.reject_approval(task_id, request_id, "user") do
+      :ok ->
+        {:noreply, put_flash(socket, :info, "Request rejected")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to reject: #{inspect(reason)}")}
+    end
+  end
+
   # Event filtering
   def handle_event("filter_events", %{"filter" => filter}, socket) do
     {:noreply, assign(socket, event_filter: filter)}
@@ -625,6 +651,12 @@ defmodule IpaWeb.Pod.TaskLive do
               count={workstream_count(@state)}
             />
             <.tab_button
+              tab={:tracker}
+              active={@active_tab}
+              label="Tracker"
+              count={tracker_item_count(@state)}
+            />
+            <.tab_button
               tab={:agents}
               active={@active_tab}
               label="Agents"
@@ -654,6 +686,8 @@ defmodule IpaWeb.Pod.TaskLive do
             />
           <% :workstreams -> %>
             <.workstreams_tab state={@state} selected_id={@selected_workstream_id} />
+          <% :tracker -> %>
+            <.tracker_tab state={@state} task_id={@task_id} />
           <% :agents -> %>
             {live_render(@socket, IpaWeb.Pod.AgentPanelLive,
               id: "agent-panel",
@@ -1141,6 +1175,239 @@ defmodule IpaWeb.Pod.TaskLive do
           />
         </div>
       <% end %>
+    </div>
+    """
+  end
+
+  # Tracker Tab
+  defp tracker_tab(assigns) do
+    tracker = assigns.state.tracker
+    phases = if tracker, do: Ipa.Pod.State.Tracker.sorted_phases(tracker), else: []
+    pending_approvals = assigns.state.pending_action_approvals || []
+    pending_tracker_approvals = Enum.filter(pending_approvals, fn req ->
+      req.status == :pending and req.action_type in [:tracker_add_item, :tracker_update_item, :tracker_remove_item]
+    end)
+
+    assigns =
+      assigns
+      |> assign(:tracker, tracker)
+      |> assign(:phases, phases)
+      |> assign(:pending_approvals, pending_tracker_approvals)
+
+    ~H"""
+    <div class="space-y-4">
+      <!-- Pending Approvals Section -->
+      <%= if length(@pending_approvals) > 0 do %>
+        <div class="alert alert-warning py-2">
+          <.icon name="hero-exclamation-triangle" class="w-4 h-4" />
+          <span class="text-sm"><%= length(@pending_approvals) %> pending modification(s)</span>
+        </div>
+        <div class="space-y-1">
+          <%= for req <- @pending_approvals do %>
+            <.approval_request_card request={req} task_id={@task_id} />
+          <% end %>
+        </div>
+      <% end %>
+
+      <!-- Tracker Content -->
+      <%= if @tracker == nil do %>
+        <div class="text-center py-8 text-base-content/60">
+          <.icon name="hero-clipboard-document-list" class="w-10 h-10 mx-auto mb-2 opacity-50" />
+          <p class="text-sm">No progress tracker yet.</p>
+        </div>
+      <% else %>
+        <!-- Compact Progress Summary -->
+        <div class="flex items-center gap-4 p-3 bg-base-200 rounded-lg">
+          <div class="flex-1">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-sm font-medium">Progress</span>
+              <span class="text-sm font-mono text-base-content/70">
+                <%= Float.round(Ipa.Pod.State.Tracker.overall_progress(@tracker), 0) %>%
+              </span>
+            </div>
+            <progress
+              class="progress progress-primary h-2 w-full"
+              value={Ipa.Pod.State.Tracker.overall_progress(@tracker)}
+              max="100"
+            ></progress>
+          </div>
+          <% summary = Ipa.Pod.State.Tracker.summary(@tracker) %>
+          <div class="flex gap-2 text-xs">
+            <span class="text-base-content/60"><%= summary.todo %> todo</span>
+            <span class="text-info"><%= summary.wip %> wip</span>
+            <span class="text-success"><%= summary.done %> done</span>
+            <%= if summary.blocked > 0 do %>
+              <span class="text-error"><%= summary.blocked %> blocked</span>
+            <% end %>
+          </div>
+        </div>
+
+        <!-- Phases as compact sections -->
+        <div class="space-y-3">
+          <%= for {phase, idx} <- Enum.with_index(@phases, 1) do %>
+            <.tracker_phase_card phase={phase} phase_number={idx} workstreams={@state.workstreams} />
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+    """
+  end
+
+  defp tracker_phase_card(assigns) do
+    progress = Ipa.Pod.State.TrackerPhase.progress_percentage(assigns.phase)
+    done_count = Enum.count(assigns.phase.items, &(&1.status == :done))
+    total_count = length(assigns.phase.items)
+
+    assigns =
+      assigns
+      |> assign(:progress, progress)
+      |> assign(:done_count, done_count)
+      |> assign(:total_count, total_count)
+
+    ~H"""
+    <div class="border border-base-300 rounded-lg overflow-hidden">
+      <!-- Phase Header -->
+      <div class="px-3 py-2 bg-base-200/50">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="font-semibold text-sm text-primary">Phase <%= @phase_number %>:</span>
+            <span class="font-medium text-sm"><%= @phase.name %></span>
+            <span class="text-xs text-base-content/50">
+              (<%= @done_count %>/<%= @total_count %>)
+            </span>
+          </div>
+          <div class="flex items-center gap-2">
+            <%= if @phase.eta do %>
+              <span class="text-xs text-base-content/50">ETA: <%= @phase.eta %></span>
+            <% end %>
+            <progress class="progress progress-success w-16 h-1.5" value={@progress} max="100"></progress>
+          </div>
+        </div>
+        <%= if Map.get(@phase, :summary) do %>
+          <p class="text-sm text-base-content/70 mt-1"><%= Map.get(@phase, :summary) %></p>
+        <% end %>
+        <%= if Map.get(@phase, :description) do %>
+          <p class="text-xs text-base-content/50 mt-0.5"><%= Map.get(@phase, :description) %></p>
+        <% end %>
+      </div>
+
+      <!-- Items as checklist -->
+      <%= if length(@phase.items) > 0 do %>
+        <div class="divide-y divide-base-200">
+          <%= for item <- @phase.items do %>
+            <.tracker_item_row item={item} workstreams={@workstreams} />
+          <% end %>
+        </div>
+      <% else %>
+        <div class="px-3 py-2 text-xs text-base-content/50">No items</div>
+      <% end %>
+    </div>
+    """
+  end
+
+  defp tracker_item_row(assigns) do
+    workstream = if assigns.item.workstream_id do
+      Map.get(assigns.workstreams || %{}, assigns.item.workstream_id)
+    end
+    ws_title = if workstream, do: workstream.title, else: assigns.item.workstream_id
+
+    assigns =
+      assigns
+      |> assign(:workstream, workstream)
+      |> assign(:ws_title, ws_title)
+
+    ~H"""
+    <div class="flex items-center gap-2 px-3 py-1.5 hover:bg-base-100">
+      <!-- Status checkbox-style indicator -->
+      <%= case @item.status do %>
+        <% :todo -> %>
+          <span class="w-4 h-4 rounded border-2 border-base-content/20 flex-shrink-0"></span>
+        <% :wip -> %>
+          <span class="w-4 h-4 rounded border-2 border-info bg-info/20 flex-shrink-0 flex items-center justify-center">
+            <span class="w-1.5 h-1.5 rounded-full bg-info animate-pulse"></span>
+          </span>
+        <% :done -> %>
+          <span class="w-4 h-4 rounded bg-success flex-shrink-0 flex items-center justify-center">
+            <.icon name="hero-check-mini" class="w-3 h-3 text-success-content" />
+          </span>
+        <% :blocked -> %>
+          <span class="w-4 h-4 rounded bg-error flex-shrink-0 flex items-center justify-center">
+            <.icon name="hero-x-mark-mini" class="w-3 h-3 text-error-content" />
+          </span>
+      <% end %>
+
+      <!-- Summary text -->
+      <span class={[
+        "flex-1 text-sm truncate",
+        @item.status == :done && "line-through text-base-content/40"
+      ]}>
+        <%= @item.summary %>
+      </span>
+
+      <!-- Workstream badge (compact) -->
+      <%= if @ws_title do %>
+        <span class="text-xs text-base-content/40 truncate max-w-24" title={@ws_title}>
+          <%= @ws_title %>
+        </span>
+      <% end %>
+
+      <!-- Status label -->
+      <span class={[
+        "text-xs px-1.5 py-0.5 rounded flex-shrink-0",
+        case @item.status do
+          :todo -> "bg-base-200 text-base-content/50"
+          :wip -> "bg-info/20 text-info"
+          :done -> "bg-success/20 text-success"
+          :blocked -> "bg-error/20 text-error"
+        end
+      ]}>
+        <%= case @item.status do %>
+          <% :todo -> %>todo
+          <% :wip -> %>wip
+          <% :done -> %>done
+          <% :blocked -> %>blocked
+        <% end %>
+      </span>
+    </div>
+    """
+  end
+
+  defp approval_request_card(assigns) do
+    description = Ipa.Pod.State.ActionApprovalRequest.describe_action(assigns.request)
+
+    assigns = assign(assigns, :description, description)
+
+    ~H"""
+    <div class="card bg-base-100 border border-warning">
+      <div class="card-body p-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="font-medium"><%= @description %></p>
+            <p class="text-sm text-base-content/60">
+              Requested by: <%= @request.requested_by %>
+              <%= if @request.reason do %>
+                &mdash; <%= @request.reason %>
+              <% end %>
+            </p>
+          </div>
+          <div class="flex gap-2">
+            <button
+              class="btn btn-sm btn-success"
+              phx-click="approve_tracker_request"
+              phx-value-request_id={@request.request_id}
+            >
+              Approve
+            </button>
+            <button
+              class="btn btn-sm btn-error btn-outline"
+              phx-click="reject_tracker_request"
+              phx-value-request_id={@request.request_id}
+            >
+              Reject
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
     """
   end
@@ -1928,6 +2195,14 @@ defmodule IpaWeb.Pod.TaskLive do
   end
 
   defp workstream_count(_state), do: 0
+
+  defp tracker_item_count(%{tracker: tracker}) when not is_nil(tracker) do
+    tracker.phases
+    |> Enum.flat_map(& &1.items)
+    |> length()
+  end
+
+  defp tracker_item_count(_state), do: 0
 
   defp agent_count(%{agents: agents}) when is_list(agents), do: length(agents)
   defp agent_count(_state), do: 0

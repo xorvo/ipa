@@ -8,7 +8,7 @@ defmodule Ipa.Pod.State do
   - Never directly mutated - only via event application
   """
 
-  alias Ipa.Pod.State.{Workstream, Message, Notification, Agent}
+  alias Ipa.Pod.State.{Workstream, Message, Notification, Agent, ActionApprovalRequest, Tracker}
 
   @type phase ::
           :spec_clarification
@@ -50,7 +50,11 @@ defmodule Ipa.Pod.State do
       spec: %{},
       plan: %{},
       report: %{}
-    }
+    },
+    # Generic action approval requests (pending, approved, rejected)
+    pending_action_approvals: [],
+    # Progress tracker
+    tracker: nil
   ]
 
   @type t :: %__MODULE__{
@@ -68,7 +72,9 @@ defmodule Ipa.Pod.State do
           notifications: [Notification.t()],
           pending_transitions: [map()],
           config: map(),
-          review_threads: %{atom() => %{String.t() => [String.t()]}}
+          review_threads: %{atom() => %{String.t() => [String.t()]}},
+          pending_action_approvals: [ActionApprovalRequest.t()],
+          tracker: Tracker.t() | nil
         }
 
   @doc "Creates a new empty state for a task."
