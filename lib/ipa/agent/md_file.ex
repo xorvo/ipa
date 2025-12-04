@@ -203,10 +203,10 @@ defmodule Ipa.Agent.MdFile do
       related_workstreams: related_workstreams,
       dependent_workstreams: dependent_workstreams,
       tracker_items: tracker_items,
-      repo_url: opts[:repo_url] || get_repo_url_from_config(),
-      branch: opts[:branch] || "main",
-      # Workstream agents work with code repositories
-      show_repo_info: opts[:show_repo_info] != false
+      repo_url: opts[:repo_url] || get_repo_url_from_state(state),
+      branch: opts[:branch] || get_branch_from_state(state),
+      # Only show repo info if a repo URL is configured for this task
+      show_repo_info: opts[:show_repo_info] != false && get_repo_url_from_state(state) != nil
     }
   end
 
@@ -235,8 +235,8 @@ defmodule Ipa.Agent.MdFile do
       task_spec: opts[:task_spec] || format_task_spec(state.spec),
       task_phase: state.phase,
       workstreams: workstreams,
-      repo_url: opts[:repo_url] || get_repo_url_from_config(),
-      branch: opts[:branch] || "main",
+      repo_url: opts[:repo_url] || get_repo_url_from_state(state),
+      branch: opts[:branch] || get_branch_from_state(state),
       # Planning/spec agents don't need repo info in their context
       show_repo_info: opts[:show_repo_info] || false
     }
@@ -639,8 +639,12 @@ defmodule Ipa.Agent.MdFile do
   defp format_task_spec(spec) when is_binary(spec), do: spec
   defp format_task_spec(_), do: "No detailed specification provided"
 
-  defp get_repo_url_from_config do
-    Application.get_env(:ipa, :repo_url, "git@github.com:xorvo/ipa.git")
+  defp get_repo_url_from_state(state) do
+    get_in(state, [:config, :repo_url])
+  end
+
+  defp get_branch_from_state(state) do
+    get_in(state, [:config, :branch]) || "main"
   end
 
   # ============================================================================

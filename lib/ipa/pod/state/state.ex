@@ -42,7 +42,10 @@ defmodule Ipa.Pod.State do
     config: %{
       max_concurrent_agents: 3,
       evaluation_interval: 5_000,
-      auto_start_agents: true
+      auto_start_agents: true,
+      # Repository configuration - set per-task when the task involves code
+      repo_url: nil,
+      branch: nil
     },
     # Review threads organized by document type
     # Each document type maps thread_id => list of message_ids in that thread

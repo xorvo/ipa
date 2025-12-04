@@ -1183,8 +1183,9 @@ defmodule Ipa.Pod.Manager do
       related_workstreams: [],
       dependent_workstreams: [],
       tracker_items: [],
-      repo_url: Application.get_env(:ipa, :repo_url, "git@github.com:xorvo/ipa.git"),
-      branch: "main"
+      repo_url: get_in(state.config, [:repo_url]),
+      branch: get_in(state.config, [:branch]) || "main",
+      show_repo_info: get_in(state.config, [:repo_url]) != nil
     }
 
     MdFile.compose(
