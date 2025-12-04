@@ -34,7 +34,7 @@ defmodule Ipa.Pod.Manager do
   alias Ipa.Pod.State.Projector
   alias Ipa.Pod.Machine.Evaluator
   alias Ipa.Pod.WorkspaceManager
-  alias Ipa.Pod.ClaudeMdTemplates
+  alias Ipa.Agent.MdFile
 
   alias Ipa.Pod.Commands.{
     PhaseCommands,
@@ -711,8 +711,8 @@ defmodule Ipa.Pod.Manager do
   end
 
   defp execute_action(state, {:spawn_agent, :planning, context}) do
-    # Create workspace for planning agent
-    workspace_path = create_planning_workspace(state.task_id)
+    # Create workspace for planning agent with CLAUDE.md
+    workspace_path = create_planning_workspace(state)
 
     # Build proper context for the planning agent
     agent_context = %{
@@ -839,8 +839,8 @@ defmodule Ipa.Pod.Manager do
 
   # Implementation for spawning spec generator agent
   defp spawn_spec_generator_impl(state, input_content) do
-    # Create workspace for the spec generator
-    workspace_path = create_spec_generator_workspace(state.task_id)
+    # Create workspace for the spec generator with CLAUDE.md
+    workspace_path = create_spec_generator_workspace(state)
 
     # Get unresolved review threads for the spec
     review_threads = get_unresolved_threads(state, :spec)
@@ -894,13 +894,24 @@ defmodule Ipa.Pod.Manager do
     end
   end
 
-  # Create workspace for spec generator
-  defp create_spec_generator_workspace(task_id) do
+  # Create workspace for spec generator with CLAUDE.md
+  defp create_spec_generator_workspace(state) do
+    task_id = state.task_id
     ensure_base_workspace(task_id)
 
     workspace_name = WorkspaceManager.generate_workspace_name("spec-generator", task_id)
 
-    case WorkspaceManager.create_sub_workspace(task_id, workspace_name, %{purpose: :spec_generator}) do
+    # Generate CLAUDE.md content via Agent.MdFile
+    agent_file_content =
+      case MdFile.for_spec_generator(state) do
+        {:ok, content} -> content
+        {:error, _} -> nil
+      end
+
+    case WorkspaceManager.create_sub_workspace(task_id, workspace_name, %{
+           purpose: :spec_generator,
+           agent_file_content: agent_file_content
+         }) do
       {:ok, path} ->
         # Create output directory for the spec
         output_dir = Path.join(path, "output")
@@ -923,8 +934,8 @@ defmodule Ipa.Pod.Manager do
 
   # Implementation for spawning planning agent
   defp spawn_planning_agent_impl(state, input_content) do
-    # Create workspace for the planning agent
-    workspace_path = create_planning_workspace(state.task_id)
+    # Create workspace for the planning agent with CLAUDE.md
+    workspace_path = create_planning_workspace(state)
 
     # Get unresolved review threads for the plan
     review_threads = get_unresolved_threads(state, :plan)
@@ -1044,14 +1055,25 @@ defmodule Ipa.Pod.Manager do
     end
   end
 
-  defp create_planning_workspace(task_id) do
+  defp create_planning_workspace(state) do
+    task_id = state.task_id
     # Ensure base workspace exists
     ensure_base_workspace(task_id)
 
     # Generate workspace name for planning
     workspace_name = WorkspaceManager.generate_workspace_name("planning", task_id)
 
-    case WorkspaceManager.create_sub_workspace(task_id, workspace_name, %{purpose: :planning}) do
+    # Generate CLAUDE.md content via Agent.MdFile
+    agent_file_content =
+      case MdFile.for_planning(state) do
+        {:ok, content} -> content
+        {:error, _} -> nil
+      end
+
+    case WorkspaceManager.create_sub_workspace(task_id, workspace_name, %{
+           purpose: :planning,
+           agent_file_content: agent_file_content
+         }) do
       {:ok, path} ->
         Logger.debug("Created planning workspace", path: path)
         path
@@ -1113,12 +1135,14 @@ defmodule Ipa.Pod.Manager do
     # Ensure base workspace exists
     ensure_base_workspace(task_id)
 
-    # Generate workspace name for workstream using workstream_id
     workspace_name = WorkspaceManager.generate_workspace_name(nil, workstream_id)
 
-    # Generate CLAUDE.md content with full context including tracker items
-    # NOTE: Pass state directly to avoid GenServer self-call deadlock
-    agent_file_content = generate_workstream_claude_md(state, workstream_id)
+    # Generate CLAUDE.md content via Agent.MdFile
+    agent_file_content =
+      case MdFile.for_workstream(state, workstream_id) do
+        {:ok, content} -> content
+        {:error, _reason} -> generate_fallback_workstream_content(state, workstream_id)
+      end
 
     case WorkspaceManager.create_sub_workspace(task_id, workspace_name, %{
            workstream_id: workstream_id,
@@ -1143,31 +1167,37 @@ defmodule Ipa.Pod.Manager do
     end
   end
 
-  # Generate CLAUDE.md content for workstream agent
-  # Uses generate_workstream_level_from_state to avoid GenServer self-call deadlock
-  defp generate_workstream_claude_md(state, workstream_id) do
-    case ClaudeMdTemplates.generate_workstream_level_from_state(state, workstream_id) do
-      {:ok, content} ->
-        content
+  defp generate_fallback_workstream_content(state, workstream_id) do
+    workstream = Map.get(state.workstreams || %{}, workstream_id, %{})
 
-      {:error, reason} ->
-        Logger.warning("Failed to generate workstream CLAUDE.md, using fallback",
-          task_id: state.task_id,
-          workstream_id: workstream_id,
-          reason: inspect(reason)
-        )
+    context = %{
+      task_id: state.task_id,
+      task_title: state.title || "Task #{state.task_id}",
+      task_spec: "No specification provided",
+      task_phase: state.phase || :pending,
+      workstream_id: workstream_id,
+      workstream_title: workstream[:title] || workstream_id,
+      workstream_status: workstream[:status] || :pending,
+      workstream_spec: workstream[:spec] || "No specification provided",
+      dependencies: workstream[:dependencies] || [],
+      related_workstreams: [],
+      dependent_workstreams: [],
+      tracker_items: [],
+      repo_url: Application.get_env(:ipa, :repo_url, "git@github.com:xorvo/ipa.git"),
+      branch: "main"
+    }
 
-        # Fallback to basic content block if template generation fails
-        Ipa.Pod.WorkspaceManager.AgentFile.ContentBlock.compose_for_sub_workspace(%{
-          task_id: state.task_id,
-          task_title: state.title || "Task #{state.task_id}",
-          task_spec: "No specification provided",
-          workstream_id: workstream_id,
-          workstream_title: workstream_id,
-          workstream_spec: "No specification provided",
-          workstream_dependencies: []
-        })
-    end
+    MdFile.compose(
+      [
+        :workspace_rules,
+        :workstream_spec,
+        :dependencies,
+        :task_context,
+        :workflow_instructions,
+        :success_criteria
+      ],
+      context
+    )
   end
 
   defp find_workstream_for_agent(state, agent_id) do

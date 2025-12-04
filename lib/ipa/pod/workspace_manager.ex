@@ -54,8 +54,6 @@ defmodule Ipa.Pod.WorkspaceManager do
 
   require Logger
 
-  alias Ipa.Pod.WorkspaceManager.AgentFile.ContentBlock
-
   # ============================================================================
   # Path Helpers
   # ============================================================================
@@ -463,23 +461,35 @@ defmodule Ipa.Pod.WorkspaceManager do
   end
 
   defp default_base_workspace_content(task_id) do
-    ContentBlock.compose_for_base_workspace(%{
-      task_id: task_id,
-      task_title: "Task #{task_id}",
-      task_spec: "No specification provided"
-    })
+    """
+    # Workspace: #{task_id}
+
+    This is an agent workspace. Specific instructions will be provided
+    when an agent is assigned to this workspace.
+
+    ## Workspace Rules
+
+    - All file operations must use paths relative to the current working directory
+    - Use `./` prefix for relative paths
+    - Never write to `/tmp/` or directories outside your workspace
+    """
   end
 
   defp default_sub_workspace_content(task_id, workspace_name) do
-    ContentBlock.compose_for_sub_workspace(%{
-      task_id: task_id,
-      task_title: "Task #{task_id}",
-      task_spec: "No specification provided",
-      workstream_id: workspace_name,
-      workstream_title: workspace_name,
-      workstream_spec: "No specification provided",
-      workstream_dependencies: []
-    })
+    """
+    # Sub-Workspace: #{workspace_name}
+
+    Parent Task: #{task_id}
+
+    This is an agent sub-workspace. Agent-specific instructions should be
+    provided via the :agent_file_content option when creating the workspace.
+
+    ## Workspace Rules
+
+    - All file operations must use paths relative to the current working directory
+    - Use `./` prefix for relative paths
+    - Never write to `/tmp/` or directories outside your workspace
+    """
   end
 
   # ============================================================================
